@@ -1,138 +1,435 @@
-# ds-modeling-pipeline
+# CryptoPulse AI
+[![Project Status: Active](https://img.shields.io/badge/status-active-success.svg)](https://github.com/your-username/cryptopulse-ai)
 
-Here you find a Skeleton project for building a simple model in a python script or notebook and log the results on MLFlow.
+### Short-Term Crypto Market Prediction with News Heatmaps
 
-There are two ways to do it: 
-* In Jupyter Notebooks:
-    We train a simple model in the [jupyter notebook](notebooks/EDA-and-modeling.ipynb), where we select only some features and do minimal cleaning. The hyperparameters of feature engineering and modeling will be logged with MLflow
+CryptoPulse AI is a **machine learning research project** that explores whether **short-term cryptocurrency price movements** can be predicted using **technical indicators and time-series models**.
 
-* With Python scripts:
-    The [main script](modeling/train.py) will go through exactly the same process as the jupyter notebook and also log the hyperparameters with MLflow
+The project combines **quantitative price analysis** with **crypto news context**, presenting insights through an interactive **Streamlit dashboard**.
 
-Data used is the [coffee quality dataset](https://github.com/jldbc/coffee-quality-database).
+---
 
-## Requirements:
+# 📌 Project Motivation
 
-- pyenv with Python: 3.11.3
+Cryptocurrency markets are **highly volatile** and often influenced by both **technical signals** and **breaking news events**.
 
-### Setup
+Most tools focus on either:
 
-Use the requirements file in this repo to create a new environment.
+* Technical analysis (charts, indicators)
+* News or sentiment analysis
 
-```BASH
-make setup
+Rarely do they combine both in a **transparent, research-oriented system**.
 
-#or
+CryptoPulse AI aims to bridge this gap by:
 
-pyenv local 3.11.3
-python -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements_dev.txt
+* Predicting short-term price movement using **machine learning models**
+* Providing **news heatmaps** to help interpret periods of volatility
+
+---
+
+# 🎯 Project Goals
+
+The main objectives of this project are:
+
+* Build a **time-series machine learning pipeline** for crypto price prediction
+* Compare **traditional ML models** with **deep learning models**
+* Implement **walk-forward validation** to avoid look-ahead bias
+* Evaluate models using **backtesting simulations**
+* Provide an **interactive dashboard** with charts, predictions, and news context
+
+---
+
+# 🏗 System Architecture
+
+The system consists of the following components:
+
+1. **Data Ingestion**
+
+   * Crypto OHLC data from APIs
+   * Crypto news headlines from news APIs
+
+2. **Feature Engineering**
+
+   * Technical indicators (RSI, MACD, Moving Averages, Bollinger Bands)
+   * Volatility and momentum features
+
+3. **Machine Learning Pipeline**
+
+   * Traditional ML models (XGBoost, LightGBM)
+   * Deep learning models (LSTM / sequence models)
+
+4. **Evaluation & Backtesting**
+
+   * Walk-forward validation
+   * Trading strategy simulation
+
+5. **Visualization Dashboard**
+
+   * OHLC price charts
+   * Indicator visualizations
+   * Model predictions
+   * Backtesting results
+   * News heatmap
+
+---
+
+# 📊 Example Workflow
+
+```
+Crypto API / News API
+        │
+        ▼
+Data Collection
+        │
+        ▼
+Feature Engineering
+        │
+        ▼
+ML Model Training
+        │
+        ▼
+Evaluation & Backtesting
+        │
+        ▼
+Saved Models
+        │
+        ▼
+Streamlit Dashboard
 ```
 
-The `requirements.txt` file contains the libraries needed for deployment.. of model or dashboard .. thus no jupyter or other libs used during development.
+---
+# CryptoPulse AI – System Architecture Diagram
+                         +----------------------+
+                         |   Crypto Data APIs   |
+                         |  (Binance / CoinGecko)|
+                         +----------+-----------+
+                                    |
+                                    |
+                                    v
+                          +-------------------+
+                          |   OHLC Data       |
+                          |   Ingestion       |
+                          | (Python scripts)  |
+                          +---------+---------+
+                                    |
+                                    v
+                              +-----------+
+                              | Raw Data  |
+                              | Storage   |
+                              | data/raw  |
+                              +-----------+
+                                    |
+                                    |
+                                    v
+                         +---------------------+
+                         | Feature Engineering |
+                         |  Technical Indicators|
+                         | (RSI, MACD, SMA...) |
+                         +----------+----------+
+                                    |
+                                    v
+                           +------------------+
+                           | ML Dataset       |
+                           | Builder          |
+                           | (Supervised TS)  |
+                           +--------+---------+
+                                    |
+                                    v
+                    +--------------------------------+
+                    |  Model Training Pipeline       |
+                    |                                |
+                    |  - XGBoost                     |
+                    |  - LightGBM                    |
+                    |  - LSTM / Deep Learning        |
+                    +---------------+----------------+
+                                    |
+                                    v
+                       +----------------------------+
+                       | Walk-Forward Validation    |
+                       | Time-Series Evaluation     |
+                       +-------------+--------------+
+                                     |
+                                     v
+                          +----------------------+
+                          | Backtesting Engine   |
+                          | Trading Simulation   |
+                          +-----------+----------+
+                                      |
+                                      v
+                         +--------------------------+
+                         | Trained Models           |
+                         | models/trained_models    |
+                         +-----------+--------------+
+                                     |
+                                     |
+                                     v
+        ------------------------------------------------------------
+                              DASHBOARD LAYER
+        ------------------------------------------------------------
 
-The MLFLOW URI should **not be stored on git**, you have two options, to save it locally in the `.mlflow_uri` file:
+                 +-----------------------------------+
+                 |        Streamlit Dashboard        |
+                 +-----------------------------------+
+                 |                                   |
+                 | 1. Price Charts (OHLC)            |
+                 | 2. Technical Indicators           |
+                 | 3. Model Predictions              |
+                 | 4. Backtesting Results            |
+                 | 5. News Heatmap                   |
+                 |                                   |
+                 +---------------+-------------------+
+                                 |
+                                 v
+                       +----------------------+
+                       |     End User         |
+                       | (Research / Demo)    |
+                       +----------------------+
 
-```BASH
-echo http://127.0.0.1:5000/ > .mlflow_uri
+
+        ------------------------------------------------------------
+                              NEWS PIPELINE
+        ------------------------------------------------------------
+
+      +--------------------+
+      | Crypto News API    |
+      | (NewsAPI / GDELT)  |
+      +---------+----------+
+                |
+                v
+      +---------------------+
+      | News Processing     |
+      | Asset detection     |
+      | Sentiment tagging   |
+      +---------+-----------+
+                |
+                v
+      +----------------------+
+      | News Aggregation     |
+      | by asset & time      |
+      +----------+-----------+
+                 |
+                 v
+      +-----------------------+
+      | News Heatmap Dataset  |
+      +----------+------------+
+                 |
+                 v
+         Streamlit Visualization
+---
+
+# 🧠 Machine Learning Models
+
+The project compares several model types:
+
+### Traditional ML
+
+* XGBoost
+* LightGBM
+* Random Forest (baseline)
+
+### Deep Learning
+
+* LSTM (Long Short-Term Memory)
+* Temporal sequence models
+
+Models are trained using **time-series validation techniques** such as **walk-forward validation**.
+
+---
+
+# 📈 Backtesting Strategy
+
+To evaluate model usefulness in practice, a simple **rule-based trading strategy** is used:
+
+Example:
+
+```
+If model predicts price increase → LONG
+Else → HOLD / FLAT
 ```
 
-This will create a local file where the uri is stored which will not be added on github (`.mlflow_uri` is in the `.gitignore` file). Alternatively you can export it as an environment variable with
+The strategy is compared against:
 
-```bash
-export MLFLOW_URI=http://127.0.0.1:5000/
+* Buy & Hold
+* Random predictions
+* Moving average strategy
+
+Performance metrics include:
+
+* Returns
+* Maximum drawdown
+* Sharpe ratio
+* Stability over time
+
+---
+
+# 📰 News Heatmap
+
+CryptoPulse AI also includes a **news heatmap visualization**.
+
+Features:
+
+* Aggregates crypto-related headlines
+* Groups by **asset and time window**
+* Optional **sentiment classification**
+* Displays **news intensity during volatility**
+
+Example visualization:
+
+```
+Asset | Time Window | News Intensity
+BTC   | 2025-01-01  | █████
+ETH   | 2025-01-01  | ███
+SOL   | 2025-01-01  | ██
 ```
 
-This links to your local mlflow, if you want to use a different one, then change the set uri.
+This helps users **understand the context behind price movements**.
 
-The code in the [config.py](modeling/config.py) will try to read it locally and if the file doesn't exist will look in the env var.. IF that is not set the URI will be empty in your code.
+---
 
-## Usage
+# 🖥 Dashboard
 
-### Creating an MLFlow experiment
+The **Streamlit dashboard** provides an interactive interface.
 
-You can do it via the GUI or via [command line](https://www.mlflow.org/docs/latest/tracking.html#managing-experiments-and-runs-with-the-tracking-service-api) if you use the local mlflow:
+Features:
 
-```bash
-mlflow experiments create --experiment-name 0-template-ds-modeling
+* OHLC price charts
+* Technical indicators
+* Model prediction plots
+* Backtesting performance
+* Crypto news heatmap
+
+---
+
+# 🛠 Tech Stack
+
+### Core
+
+* Python
+* NumPy
+* Pandas
+
+### Machine Learning
+
+* scikit-learn
+* XGBoost
+* LightGBM
+* TensorFlow / PyTorch
+
+### Technical Indicators
+
+* pandas-ta
+* TA-Lib
+
+### Visualization
+
+* Matplotlib
+* Plotly
+* mplfinance
+* Streamlit
+
+### Deployment
+
+* Docker
+
+---
+
+# 📂 Project Structure
+
+```
+cryptopulse-ai/
+│
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── features/
+│
+├── notebooks/
+│
+├── src/
+│   ├── data/
+│   ├── features/
+│   ├── models/
+│   ├── evaluation/
+│   └── news/
+│
+├── dashboard/
+│
+├── models/
+│
+├── Dockerfile
+├── requirements.txt
+└── README.md
 ```
 
-Check your local mlflow
+---
 
-```bash
-mlflow ui
+# ▶️ Running the Project
+
+### 1️⃣ Clone the repository
+
+```
+git clone https://github.com/yourusername/cryptopulse-ai.git
+cd cryptopulse-ai
 ```
 
-and open the link [http://127.0.0.1:5000](http://127.0.0.1:5000)
+### 2️⃣ Install dependencies
 
-This will throw an error if the experiment already exists. **Save the experiment name in the [config file](modeling/config.py).**
-
-In order to train the model and store test data in the data folder and the model in models run:
-
-```bash
-#activate env
-source .venv/bin/activate
-
-python -m modeling.train
+```
+pip install -r requirements.txt
 ```
 
-In order to test that predict works on a test set you created run:
+### 3️⃣ Run the dashboard
 
-```bash
-python modeling/predict.py models/linear data/X_test.csv data/y_test.csv
+```
+streamlit run dashboard/app.py
 ```
 
-## About MLFLOW -- delete this when using the template
+---
 
-MLFlow is a tool for tracking ML experiments. You can run it locally or remotely. It stores all the information about experiments in a database.
-And you can see the overview via the GUI or access it via APIs. Sending data to mlflow is done via APIs. And with mlflow you can also store models on S3 where you version them and tag them as production for serving them in production.
-![mlflow workflow](images/0_general_tracking_mlflow.png)
+# 🐳 Docker Deployment
 
-### MLFlow GUI
+Build the container:
 
-You can group model trainings in experiments. The granularity of what an experiment is up to your usecase. Recommended is to have an experiment per data product, as for all the runs in an experiment you can compare the results.
-![gui](images/1_gui.png)
-
-### Code to send data to MLFlow
-
-In order to send data about your model you need to set the connection information, via the tracking uri and also the experiment name (otherwise the default one is used). One run represents a model, and all the rest is metadata. For example if you want to save train MSE, test MSE and validation MSE you need to name them as 3 different metrics.
-If you are doing CV you can set the tracking as nested.
-![mlflow code](images/2_code.png)
-
-### MLFlow metadata
-
-There is no constraint between runs to have the same metadata tracked. I.e. for one run you can track different tags, different metrics, and different parameters (in cv some parameters might not exist for some runs so this .. makes sense to be flexible).
-
-- tags can be anything you want.. like if you do CV you might want to tag the best model as "best"
-- params are perfect for hypermeters and also for information about the data pipeline you use, if you scaling vs normalization and so on
-- metrics.. should be numeric values as these can get plotted
-
-![mlflow metadata](images/3_metadata.png)
-
-## Development Notes
-
-### Handling Merge Conflicts in Jupyter Notebooks
-
-When working collaboratively, merge conflicts may occur in `.ipynb` files because notebooks are stored as JSON.  
-To simplify resolving these conflicts, this project uses **nbdime** (already included in `requirements_dev.txt`).
-
-#### Enable once
-After setting up your environment, enable nbdime for Git:
-```bash
-nbdime config-git --enable
+```
+docker build -t cryptopulse-ai .
 ```
 
-#### When a merge conflict occurs
-Run the following command to open the merge tool:
-```bash
-nbdime mergetool
+Run the container:
+
 ```
-A browser window will open showing both notebook versions side by side.
-Select the correct cells, save, and then complete the merge:
-```bash
-git add <notebook>.ipynb
-git commit -m "Resolve notebook merge conflict"
+docker run -p 8501:8501 cryptopulse-ai
 ```
-That’s it — clean merges for notebooks!
+
+---
+
+# ⚠️ Disclaimer
+
+This project is **for research and educational purposes only**.
+
+The models and trading simulations presented here **do not constitute financial advice**.
+
+Cryptocurrency markets involve **significant risk**, and results from historical data **do not guarantee future performance**.
+
+---
+
+# 👨‍💻 Author
+
+**Jaideep Naik**
+
+Software Engineer | Machine Learning Enthusiast
+
+---
+
+# ⭐ Future Improvements
+
+Possible extensions include:
+
+* Transformer-based time-series models
+* Advanced sentiment analysis for news
+* Real-time crypto market streaming
+* Portfolio optimization
+* Automated trading integration
+
+---
+
+If you found this project useful, consider giving it a ⭐ on GitHub!
