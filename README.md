@@ -415,7 +415,7 @@ Cryptocurrency markets involve **significant risk**, and results from historical
 # 👨‍💻 Author
 
 **Jaideep Naik**
-**Jolanda Tinge**
+**& Jolanda Tinge**
 
 Software Engineer | Machine Learning Enthusiast
 
