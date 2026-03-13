@@ -374,9 +374,17 @@ cd cryptopulse-ai
 
 ### 2️⃣ Install dependencies
 
-```
-pip install -r requirements.txt
-```
+### **`macOS`** type the following commands :
+
+- Install the virtual environment and the required packages by following commands:
+
+  ```BASH
+  pyenv local 3.11.3
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install --upgrade pip
+  pip install -r requirements_dev.txt
+  ```
 
 ### 3️⃣ Run the dashboard
 
@@ -415,6 +423,7 @@ Cryptocurrency markets involve **significant risk**, and results from historical
 # 👨‍💻 Author
 
 **Jaideep Naik**
+**& Jolanda Tinge**
 
 Software Engineer | Machine Learning Enthusiast
 
