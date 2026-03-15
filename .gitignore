@@ -136,3 +136,6 @@ models/*
 
 #config file has sensitive data
 .mlflow_uri
+
+# keep notebooks locally for markdown analysis q&a and learning purposes and maybe additions to our main notebooks
+notebooks/01-Data-Cleaning-and-Preprocessing.ipynb
