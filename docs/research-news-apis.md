@@ -38,8 +38,6 @@ The primary goal is to find an API that can fulfill User Story 5.1 (collecting h
 
 ## Recommendation
 
-## Recommendation
-
 Based on this initial research, the **Cryptopanic API** is the recommended choice.
 
 A review of the initial product prototype confirms that the required feature is not just a list of headlines, but a curated and analyzed stream of *crypto-relevant* news from a wide variety of sources (including major outlets like Reuters). A general-purpose news API would require us to build a complex filtering, entity-recognition, and sentiment-analysis engine from scratch.
