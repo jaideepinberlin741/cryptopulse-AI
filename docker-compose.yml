@@ -1,0 +1,18 @@
+services:
+  data-scheduler:
+    image: python:3.11-slim
+    command: bash -c "pip install pandas python-binance APScheduler ta numpy && python src/data/data_update_scheduler.py"
+    restart: unless-stopped
+    volumes:
+      - .:/app:cached
+      - ./data:/app/data
+      - ./logs:/app/logs
+    working_dir: /app
+    environment:
+      - PYTHONUNBUFFERED=1
+
+
+# Run instructions      
+# docker-compose up -d data-scheduler
+# docker-compose logs -f data-scheduler  # Live logs
+# docker-compose down                     # Stop
