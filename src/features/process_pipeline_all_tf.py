@@ -1,94 +1,101 @@
-import pandas as pd
+import os
 import numpy as np
+import pandas as pd
 from ta.trend import SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
-import os
 
-TIMEFRAMES = ['3m', '5m', '15m', '1h', '4h', '1d', '1w']
 
-def get_window(tf):
-    """Adaptive window scaling per timeframe."""
-    tf_map = {'3m': 14, '5m': 20, '15m': 24, '1h': 24, '4h': 20, '1d': 14, '1w': 10}
-    return tf_map.get(tf, 20)
+TIMEFRAMES = ["3m", "5m", "15m", "1h", "4h", "1d", "1w"]
 
-def engineer_features(df, tf):
-    """Complete technical analysis suite."""
-    # Basic price/volume features
-    df['returns'] = df['close'].pct_change()
-    df['hl_range'] = (df['high'] - df['low']) / df['close'] * 100
-    df['hl_pct'] = (df['high'] - df['low']) / df[['high', 'low']].max(axis=1) * 100
-    
-    # Adaptive window
-    window = get_window(tf)
-    
-    # Volatility (realized BTC vol index)
-    df['volatility'] = df['returns'].rolling(window).std() * np.sqrt(365 * 24) * 100  # Annualized
-    df['volatility_short'] = df['returns'].rolling(window//2).std() * 100
-    
-    # Trend: SMAs
-    df['sma_short'] = SMAIndicator(df['close'], window=window).sma_indicator()
-    df['sma_long'] = SMAIndicator(df['close'], window=window*2).sma_indicator()
-    df['sma_ratio'] = df['sma_short'] / df['sma_long']
-    
-    # Momentum: RSI
-    df['rsi'] = RSIIndicator(df['close'], window=window).rsi()
-    
-    # MACD
-    macd = MACD(df['close'], window_slow=window*2, window_fast=window)
-    df['macd'] = macd.macd()
-    df['macd_signal'] = macd.macd_signal()
-    df['macd_histogram'] = macd.macd_diff()
-    
-    # Bollinger Bands
-    bb = BollingerBands(df['close'], window=window)
-    df['bb_upper'] = bb.bollinger_hband()
-    df['bb_lower'] = bb.bollinger_lband()
-    df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['close']
-    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-    
-    # Volume features
-    df['volume_sma'] = df['volume'].rolling(window).mean()
-    df['volume_ratio'] = df['volume'] / df['volume_sma']
-    
-    # Price position
-    df['price_position'] = (df['close'] - df['sma_long']) / df['sma_long'] * 100
-    
-    # NaN handling (forward fill → drop)
-    df.fillna(method='ffill', inplace=True)
+
+def engineer_features_for_file(input_csv: str, output_csv: str) -> pd.DataFrame:
+    """
+    Create OHLCV + engineered features for a single timeframe CSV.
+    """
+    df = pd.read_csv(input_csv)
+
+    # Ensure time index
+    df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+
+    df.set_index("open_time", inplace=True)
+
+    # Keep OHLCV as float
+    df = df[["open", "high", "low", "close", "volume"]].astype(float)
+
+    # --- Basic returns and ranges ---
+    df["returns"] = df["close"].pct_change()
+
+    df["hl_range"] = df["high"] - df["low"]
+    df["hl_pct"] = df["hl_range"] / df["close"] * 100
+
+    df["volatility"] = df["returns"].rolling(24).std() * 100
+    df["volatility_short"] = df["returns"].rolling(6).std() * 100
+
+    # --- Trend indicators ---
+    sma_short = SMAIndicator(df["close"], window=20)
+    sma_long = SMAIndicator(df["close"], window=50)
+    df["sma_20"] = sma_short.sma_indicator()
+    df["sma_50"] = sma_long.sma_indicator()
+    df["sma_ratio"] = df["sma_20"] / df["sma_50"]
+
+    df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+
+    macd = MACD(df["close"])
+    df["macd"] = macd.macd()
+    df["macd_signal"] = macd.macd_signal()
+    df["macd_histogram"] = macd.macd_diff()
+
+    # --- Bollinger Bands derived features ---
+    bb = BollingerBands(df["close"], window=20)
+    bb_upper = bb.bollinger_hband()
+    bb_lower = bb.bollinger_lband()
+
+    df["bb_width"] = (bb_upper - bb_lower) / df["close"] * 100
+    df["bb_position"] = (df["close"] - bb_lower) / (bb_upper - bb_lower)
+
+    # --- Volume / price positioning ---
+    df["volume_ratio"] = df["volume"] / df["volume"].rolling(20).mean()
+
+    rolling_low = df["low"].rolling(50).min()
+    rolling_high = df["high"].rolling(50).max()
+    df["price_position"] = (df["close"] - rolling_low) / (rolling_high - rolling_low)
+
+    # Cleanup NaNs / inf
+    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+    df.fillna(method="ffill", inplace=True)
     df.dropna(inplace=True)
-    
-    return df[['returns', 'hl_range', 'hl_pct', 'volatility', 'volatility_short', 
-               'sma_ratio', 'rsi', 'macd', 'macd_signal', 'macd_histogram',
-               'bb_width', 'bb_position', 'volume_ratio', 'price_position']]
 
-def process_all_timeframes():
-    """User Story 2.1: Feature engineering ALL timeframes."""
-    os.makedirs('../../data/processed', exist_ok=True)
-    
-    for tf in TIMEFRAMES:
-        print(f"\n🔄 Processing {tf}...")
-        
-        # Load raw
-        raw_path = f"../../data/raw/btc_{tf}_raw.csv"
-        if not os.path.exists(raw_path):
-            print(f"❌ Missing {raw_path}")
+    # Save
+    os.makedirs("data/processed", exist_ok=True)
+    df.reset_index().to_csv(output_csv, index=False)
+
+    print(f"[FEAT] {input_csv} -> {output_csv}, rows={len(df)}")
+    print("[FEAT] Columns:", df.columns.tolist())
+    return df
+
+
+def engineer_features_all_timeframes(
+    timeframes=None,
+    raw_dir: str = "data/raw",
+    processed_dir: str = "data/processed",
+) -> None:
+    """
+    Run feature engineering for all BTC timeframes.
+    """
+    if timeframes is None:
+        timeframes = TIMEFRAMES
+
+    for tf in timeframes:
+        in_path = os.path.join(raw_dir, f"btc_{tf}_raw.csv")
+        out_path = os.path.join(processed_dir, f"btc_{tf}_features.csv")
+
+        if not os.path.exists(in_path):
+            print(f"[WARN] Skipping {tf}: raw file not found: {in_path}")
             continue
-            
-        df = pd.read_csv(raw_path)
-        df['open_time'] = pd.to_datetime(df['open_time'])
-        df.set_index('open_time', inplace=True)
-        df = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        
-        # Feature Engineering
-        df_features = engineer_features(df, tf)
-        
-        # Save
-        output = f"../../data/processed/btc_{tf}_features.csv"
-        df_features.to_csv(output)
-        print(f"✅ {len(df_features):,} rows, {len(df_features.columns)} features → {output}")
-    
-    print("\n🎉 Feature engineering COMPLETE!")
+
+        engineer_features_for_file(in_path, out_path)
+
 
 if __name__ == "__main__":
-    process_all_timeframes()
+    engineer_features_all_timeframes()
