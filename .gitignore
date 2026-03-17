@@ -130,6 +130,7 @@ dmypy.json
 
 # csvs and data files
 data/**/*.csv
+data/processed/*.npy
 models/*.sav
 mlruns
 models/*
