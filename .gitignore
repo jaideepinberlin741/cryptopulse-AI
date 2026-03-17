@@ -136,3 +136,6 @@ models/*
 
 #config file has sensitive data
 .mlflow_uri
+
+# notebooks
+notebooks/eda-initial-data-check.ipynb
