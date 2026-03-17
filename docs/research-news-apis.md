@@ -36,10 +36,17 @@ The primary goal is to find an API that can fulfill User Story 5.1 (collecting h
 *   **Cons:**
     *   Likely lacks advanced features like filtering, sentiment analysis, or deep archives.
 
-## Recommendation
+## Recommendation (Revised)
 
-Based on this initial research, the **Cryptopanic API** is the recommended choice.
+Based on team alignment and a review of our capstone goals, the recommended choice is the **NewsAPI.org** API.
 
-A review of the initial product prototype confirms that the required feature is not just a list of headlines, but a curated and analyzed stream of *crypto-relevant* news from a wide variety of sources (including major outlets like Reuters). A general-purpose news API would require us to build a complex filtering, entity-recognition, and sentiment-analysis engine from scratch.
+### Justification for Recommendation
 
-An aggregator service like Cryptopanic has already performed this essential curation work. It represents the most direct and efficient path to implementing the news heatmap feature as designed, fulfilling our immediate needs for headlines while providing a clear path toward the sentiment analysis features planned for later stages of the project.
+NewsAPI is the strongest choice for this project because it directly supports the educational and technical goals of the epic:
+
+*   **Build Custom Logic:** It requires us to build our own filtering logic, which is an excellent way to demonstrate foundational engineering skills.
+*   **Enable Future Expansion:** It provides a raw data stream that is perfect for building our own sentiment analysis pipeline in a future version.
+*   **Control the Data Model:** We define our own data model from the start, rather than relying on the structure of a pre-built crypto aggregator.
+*   **Stability and Predictability:** It is a well-known, stable API, which will minimize time spent debugging API quirks and maximize time spent building features.
+
+This approach aligns perfectly with our decision to prioritize building a "foundational data pipeline" and gives us full control over the data sources from the beginning. Using a general-purpose news API allows us to demonstrate this skill effectively and intentionally defers the complexity of crypto-specific filtering, which aligns with our simplified scope.

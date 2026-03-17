@@ -1,78 +1,65 @@
-# Architecture Design: News Heatmap Pipeline
+# Architecture Design: News Pipeline (Capstone v1)
 
-This document outlines the technical design for the data pipeline that will power the News Heatmap feature (Epic 5).
+This document outlines the simplified technical design for the data pipeline that will power the news feature for the capstone project (Epic 5).
 
 ## Goal of the Pipeline
-To periodically fetch curated crypto news from the Cryptopanic API, store it in our own database, and expose it through our backend API for the frontend to consume.
 
-## Core Architectural Components
-Our pipeline will consist of three main services:
+For the capstone, our goal is to periodically fetch relevant crypto news from a **general news API** and expose it through our backend API for the frontend to consume and display as a list of headlines.
 
-1.  **The Collector:** A scheduled Python script responsible for fetching data from the Cryptopanic API.
-2.  **The Database:** A dedicated table in our project's database to store the news data permanently.
-3.  **The API Server:** Our existing backend application (e.g., FastAPI) will have a new endpoint to serve this stored data to the frontend.
+## Core Architectural Components (Simplified for Capstone)
 
-## Architectural Flow
-The following diagram illustrates the flow of data through the system:
+Our pipeline will consist of two main services for the initial version:
 
-flowchart TD
+1.  **The Collector:** A scheduled Python script responsible for fetching data from the selected general news API (e.g., NewsAPI.org, GNews).
+2.  **The API Server:** Our existing backend application (e.g., FastAPI) will have a new endpoint to trigger the collector and serve the fresh data to the frontend.
 
-    A[Scheduler<br/>(cron job)]
-    B[Collector Script<br/>fetch_news.py]
-    C[Cryptopanic API]
-    D[(PostgreSQL<br/>news_articles)]
-    E[Backend API<br/>GET /v1/news]
-    F[Frontend Heatmap]
+*Note: A database for persistent storage has been deferred to a future version.*
 
-    A --> B
-    B -- GET request --> C
-    B --> D
-    D --> E
-    F -- HTTP Request --> E
+## Architectural Flow (Simplified for Capstone)
 
+The following text-based diagram illustrates the simplified flow of data for the capstone:
 
----
+```text
+1. Frontend UI --(HTTP Request)--> Backend API (/v1/news)
+2. Backend API --(Triggers)--> Collector Script (fetch_news.py)
+3. Collector Script --(GET Request)--> General News API
+4. General News API --(News Data)--> Collector Script
+5. Collector Script --(Headlines)--> Backend API
+6. Backend API --(JSON Response)--> Frontend UI
 
-## Detailed Component Breakdown
+### 3. Detailed Component Breakdown
 
-### 1. The Collector Script (`fetch_news.py`)
-This is the heart of our data ingestion. It is a standalone Python script that will be run on a recurring schedule.
+#### 1. The Collector Script (`fetch_news.py`)
 
-*   **Trigger:** It will be run every 15 minutes by a server scheduler like `cron`.
-*   **Logic:**
-    1.  **Load API Key:** Securely load the Cryptopanic API token from an environment variable.
-    2.  **API Call:** Make a `GET` request to the Cryptopanic `/posts/` endpoint.
-    3.  **Deduplication:** For each article received, check if its unique ID already exists in our `news_articles` database table to prevent duplicate entries.
-    4.  **Transform & Load:** If the article is new, transform its structure to match our database schema and insert it as a new row.
+This is the heart of our data ingestion. It is a standalone Python script that will be triggered by our backend.
 
-### 2. The Database Schema (`news_articles` table)
-This schema defines the structure of our internal data model for storing news articles in PostgreSQL.
+- **Trigger:** It will be executed when a request is made to our backend's `/v1/news` endpoint.
+- **Logic:**
+    1.  **Load API Key:** Securely load the API token for the chosen news service from an environment variable.
+    2.  **API Call:** Make a `GET` request to the news API's endpoint, using keywords like "crypto," "Bitcoin," and "Ethereum" to get relevant articles.
+    3.  **Transform:** Process the JSON response to create a clean list of news headlines, URLs, and publication dates.
+    4.  **Return Data:** Return the list of headlines to the backend API.
 
-```sql
-CREATE TABLE news_articles (
-    id VARCHAR(255) PRIMARY KEY,       -- The unique ID from the Cryptopanic API
-    title TEXT NOT NULL,
-    published_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    article_url TEXT,
-    sentiment VARCHAR(50),             -- e.g., 'bullish', 'bearish', 'neutral'
-    impact VARCHAR(50),                -- e.g., 'high', 'medium', 'low'
-    source_name VARCHAR(255),
-    mentioned_assets TEXT[]            -- A PostgreSQL array of asset symbols like {'BTC', 'ETH'}
-);
-3. The API Endpoint (GET /v1/news)
-This is the endpoint our frontend will use to retrieve data for the heatmap.
+#### 2. The API Endpoint (GET /v1/news)
 
-Framework: To be added to our existing FastAPI application.
-Endpoint: GET /v1/news
-Query Parameters:
-start_date: ISO 8601 timestamp (e.g., 2024-03-10T00:00:00Z)
-end_date: ISO 8601 timestamp (e.g., 2024-03-16T23:59:59Z)
-asset: Asset symbol (e.g., BTC)
-Response: A JSON array of news articles that match the filter criteria.
-The Future-Proofing Strategy
-This design is robust because its components are decoupled.
+This is the endpoint our frontend will use to retrieve fresh news headlines.
 
-The API Server and the Frontend only ever communicate with our database. They have no knowledge of the Cryptopanic API. The Collector Script is the only component that interacts with the external API.
+- **Framework:** To be added to our existing FastAPI application.
+- **Endpoint:** `GET /v1/news`
+- **Logic:**
+    1.  On receiving a request, the endpoint will call the `fetch_news.py` script.
+    2.  It will receive the list of headlines from the script.
+    3.  It will return this list as a JSON array to the frontend.
+- **Query Parameters:**
+    - `query`: A string for the search keywords (e.g., "BTC").
+- **Response:** A JSON array of fresh news articles.
 
-This decoupling means that for a future version, we can completely rewrite the fetch_news.py script (e.g., to use a different data source and our own sentiment model) without needing to change any other part of the application, as long as the data continues to conform to the news_articles table schema.
+The Future-Proofing Strategy (Revised)
+This simplified design allows us to deliver the core feature for the capstone while building a solid foundation.
 
+The fetch_news.py script is a modular component. For a future version, we can easily enhance this pipeline by:
+
+Adding a database to store the news permanently.
+Modifying the script to load data into the database.
+Implementing our own sentiment analysis model to enrich the data.
+This approach allows us to iterate and add complexity in a controlled way after the capstone is complete.
