@@ -40,12 +40,12 @@ HORIZONS_BY_TF: Dict[str, List[str]] = {
 
 # Horizon-specific thresholds on pct return (future_price / price - 1)
 HORIZON_THRESHOLDS: Dict[str, float] = {
-    "5m": 0.003,    # 0.3 %
-    "15m": 0.0065,  # 0.65 %
-    "1h": 0.0085,   # 0.85 %
-    "4h": 0.01,     # 1   %
-    "1d": 0.02,     # 2   %
-    "1w": 0.05,     # 5   %
+    "5m": 0.0017,    # 0.17 %
+    "15m": 0.0029,  # 0.29 %
+    "1h": 0.0058,   # 0.58 %
+    "4h": 0.012,     # 1.2   %
+    "1d": 0.036,     # 3.6   %
+    "1w": 0.113,     # 11.3   %
 }
 
 
@@ -104,43 +104,54 @@ def ensure_datetime_index(
 # label logic
 # ---------------------------------------------------------------------
 
+# Per-timeframe strong-move thresholds (90th percentile-based)
+HORIZON_THRESHOLDS = {
+    "5m":  0.0017,   # 0.17 %
+    "15m": 0.0029,   # 0.29 %
+    "1h":  0.0058,   # 0.58 %
+    "4h":  0.0120,   # 1.20 %
+    "1d":  0.0360,   # 3.60 %
+    "1w":  0.1130,   # 11.30 %
+}
+
+K_NEUTRAL = 0.1  # eps = 10% of strong threshold for that TF
+
+
 def classify_direction(
     pct_ret: float,
     prev_dir: int,
     thr: float,
+    k_neutral: float = 0.1,
 ) -> int:
     """
-        -2 = Bearish
-        -1 = Sideways -> Bearish
-         0 = Sideways
-         1 = Sideways -> Bullish
-         2 = Bullish
+        -2 = Bearish (continuation)
+        -1 = Sideways -> Bearish or mild bearish
+         0 = Sideways (tiny move)
+         1 = Sideways -> Bullish or mild bullish
+         2 = Bullish (continuation)
     """
-    # Base 3-class from raw return
+    eps = k_neutral * thr
+
     if pct_ret > thr:
-        base = 1      # bullish zone
+        base = 1
     elif pct_ret < -thr:
-        base = -1     # bearish zone
+        base = -1
+    elif pct_ret > eps:
+        base = 0.5
+    elif pct_ret < -eps:
+        base = -0.5
     else:
-        base = 0      # sideways
+        base = 0
 
-    # Map to 5 classes using previous state
     if base == 1:
-        # Bullish zone
-        if prev_dir in (0, -1):   # coming from sideways or bearish
-            return 1              # Sideways -> Bullish
-        else:
-            return 2              # Bullish (continuation)
-
+        return 1 if prev_dir in (0, -1) else 2
     if base == -1:
-        # Bearish zone
-        if prev_dir in (0, 1):    # coming from sideways or bullish
-            return -1             # Sideways -> Bearish
-        else:
-            return -2             # Bearish (continuation)
-
-    # base == 0
-    return 0                      # Sideways
+        return -1 if prev_dir in (0, 1) else -2
+    if base == 0.5:
+        return 1
+    if base == -0.5:
+        return -1
+    return 0
 
 
 # ---------------------------------------------------------------------
