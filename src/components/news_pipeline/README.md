@@ -4,23 +4,43 @@ This document outlines the purpose and technical implementation of the news data
 
 ## 1. Goal
 
-The primary goal of this feature is to collect high-quality, relevant global news that can provide context for cryptocurrency market movements. The data gathered here is the foundation for the "News Heatmap" visualization (User Story #5.2).
+The primary goal of this feature is to collect and categorize high-quality, relevant global news to provide a multi-faceted context for cryptocurrency market movements. The pipeline will gather news from three distinct categories: **Financial**, **Geopolitical**, and **Crypto**. This data is the foundation for the "News Heatmap" visualization (User Story #5.2).
 
 ## 2. Key Components
 
 This feature consists of three main files:
 
--   `src/features/news_pipeline/fetch_news.py`: A standalone Python script responsible for connecting to the NewsAPI and fetching the articles based on a sophisticated query.
+-   `src/features/news_pipeline/fetch_news.py`: A standalone Python script responsible for connecting to the NewsAPI and fetching articles based on a sophisticated query strategy.
 -   `src/api/v1/news.py`: A FastAPI router that defines the `/v1/news` API endpoint. It uses the `fetch_news` function to get the data.
 -   `src/main.py`: The main FastAPI application entry point, which includes and serves the `/v1/news` endpoint.
 
 ## 3. Core Logic & Design Decisions
 
-The effectiveness of this feature comes from a series of strategic data filtering decisions:
+To provide a comprehensive view for the heatmap, the fetching strategy is designed to pull articles from three distinct categories by making separate, targeted calls to `newsapi.org`.
 
--   **Curated Sources:** We exclusively pull data from a curated list of top-tier, trusted financial news sources (`reuters`, `bloomberg`, `the-wall-street-journal`, etc.) to ensure signal quality.
--   **Macro & Geopolitical Focus:** The search query is specifically designed to find articles related to broad macroeconomic and geopolitical events (e.g., inflation, central bank policy, elections, trade wars).
--   **Crypto Noise Filtration:** Crucially, the query uses a `NOT` operator to **explicitly exclude** articles that are primarily about "crypto," "bitcoin," or "blockchain." This ensures the data reflects external world events that *influence* crypto, rather than the crypto world talking about itself.
+### 1. Financial News
+This feed captures broad financial and economic news from top-tier sources.
+
+*   **Endpoint:** `/v2/top-headlines`
+*   **Parameters:**
+    *   `category`: `business`
+    *   `sources`: (Recommended) e.g., `bloomberg`, `the-wall-street-journal`, `financial-post`
+
+### 2. Geopolitical News
+This feed acts as a proxy for major world events that can impact markets, pulling from trusted international sources.
+
+*   **Endpoint:** `/v2/top-headlines`
+*   **Parameters:**
+    *   `category`: `general`
+    *   `sources`: (Recommended) e.g., `reuters`, `associated-press`
+
+### 3. Crypto News
+This feed provides highly specific, targeted news about the cryptocurrency ecosystem, which was previously excluded.
+
+*   **Endpoint:** `/v2/everything`
+*   **Parameters:**
+    *   `q`: A detailed query string using boolean operators.
+    *   **Example `q` parameter:** `(crypto OR cryptocurrency OR bitcoin OR ethereum OR blockchain OR DeFi OR NFT) AND NOT (scam OR hack OR giveaway)`
 
 ## 4. How to Run & Test
 
