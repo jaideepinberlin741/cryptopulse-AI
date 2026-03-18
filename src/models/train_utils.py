@@ -101,8 +101,7 @@ def load_dataset(config: TrainingConfig) -> Tuple[np.ndarray, np.ndarray, np.nda
         label_idx = np.where(np.array(label_cols) == config.label_column)[0][0]
         y_selected = y[:, label_idx].astype(int)
     except (IndexError, ValueError):
-        print(f"'{config.label_column}' not in {label_cols}")
-        raise ValueError(f"Label '{config.label_column}' not found")
+        raise ValueError(f"Label '{config.label_column}' not found. Available labels are: {label_cols}")
     
     print(f"SUCCESS: X({X.shape}), y({y_selected.shape}), classes: {np.unique(y_selected)}")
     return X, y_selected, t, label_cols
