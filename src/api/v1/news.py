@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any
 
 # --- IMPORTANT: We are importing the function you just built! ---
-from src.features.news_pipeline.fetch_news import fetch_news_articles
+from src.components.news_pipeline.fetch_news import fetch_news_articles
 
 # Create a new router for this feature
 router = APIRouter()
