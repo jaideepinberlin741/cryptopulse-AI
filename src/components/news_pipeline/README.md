@@ -23,19 +23,17 @@ This feed captures broad financial and economic news from top-tier sources.
 
 *   **Endpoint:** `/v2/top-headlines`
 *   **Parameters:**
-    *   `category`: `business`
-    *   `sources`: (Recommended) e.g., `bloomberg`, `the-wall-street-journal`, `financial-post`
+    *   `sources`: `bloomberg,the-wall-street-journal,reuters,financial-times`
 
 ### 2. Geopolitical News
 This feed acts as a proxy for major world events that can impact markets, pulling from trusted international sources.
 
 *   **Endpoint:** `/v2/top-headlines`
 *   **Parameters:**
-    *   `category`: `general`
-    *   `sources`: (Recommended) e.g., `reuters`, `associated-press`
+    *   `sources`: `associated-press,bbc-news,politico,the-economist`
 
 ### 3. Crypto News
-This feed provides highly specific, targeted news about the cryptocurrency ecosystem, which was previously excluded.
+This feed provides highly specific, targeted news about the cryptocurrency ecosystem. It uses a powerful keyword search across tens of thousands of sources to ensure broad coverage.
 
 *   **Endpoint:** `/v2/everything`
 *   **Parameters:**
@@ -48,4 +46,4 @@ This feed provides highly specific, targeted news about the cryptocurrency ecosy
 2.  **Set Environment Variable:** Create a `.env` file in the project root and add the key: `NEWS_API_KEY="YOUR_KEY_HERE"`.
 3.  **Install Dependencies:** Ensure you have installed the necessary libraries: `pip install fastapi "uvicorn[standard]" python-dotenv requests`.
 4.  **Run the Server:** From the project root, run the command: `uvicorn src.main:app --reload`.
-5.  **Test the Endpoint:** Open a browser or Postman and access `http://127.0.0.1:8000/v1/news/`.
+5.  **Test the Endpoint:** Open a browser or Postman and access `http://127.0.0.1:8000/v1/news/`
