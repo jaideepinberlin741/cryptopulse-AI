@@ -23,10 +23,9 @@ def fetch_categorized_news():
 
     # 1. Fetch Financial News
     try:
-        # **FIX:** Removed the 'category' parameter to use 'sources' exclusively.
         financial_params = {
             "language": "en",
-            "sources": "bloomberg,the-wall-street-journal,reuters"
+            "sources": "bloomberg,the-wall-street-journal,reuters,financial-times"
         }
         response = requests.get(f"{BASE_URL}/top-headlines", headers=headers, params=financial_params)
         response.raise_for_status() 
@@ -40,10 +39,10 @@ def fetch_categorized_news():
 
     # 2. Fetch Geopolitical News
     try:
-        # **FIX:** Removed the 'category' parameter to use 'sources' exclusively.
+        # **UPDATE:** Added 'politico' and 'the-economist' to the sources.
         geopolitical_params = {
             "language": "en",
-            "sources": "associated-press,bbc-news" # Added BBC for more coverage
+            "sources": "associated-press,bbc-news,politico,the-economist"
         }
         response = requests.get(f"{BASE_URL}/top-headlines", headers=headers, params=geopolitical_params)
         response.raise_for_status()
@@ -55,7 +54,7 @@ def fetch_categorized_news():
     except requests.exceptions.RequestException as e:
         print(f"Error fetching geopolitical news: {e}")
 
-    # 3. Fetch Crypto News (This part was already working perfectly!)
+    # 3. Fetch Crypto News
     try:
         crypto_params = {
             "q": "(crypto OR cryptocurrency OR bitcoin OR ethereum OR blockchain OR DeFi OR NFT) AND NOT (scam OR hack OR giveaway)",
@@ -78,7 +77,6 @@ def fetch_categorized_news():
 if __name__ == '__main__':
     categorized_articles = fetch_categorized_news()
     if categorized_articles:
-        # Let's print more to see all categories
         print("\n--- Sample of Fetched Articles ---")
         for article in categorized_articles[:15]:
             print(f"[{article.get('category')}] {article.get('title')}")
