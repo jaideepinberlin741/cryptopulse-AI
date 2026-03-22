@@ -26,26 +26,22 @@ import pandas as pd
 # Timeframes, horizons, thresholds
 # ---------------------------------------------------------------------
 
-TIMEFRAMES: List[str] = ["5m", "15m", "1h", "4h", "1d", "1w"]
+TIMEFRAMES: List[str] = ["15m", "1h", "4h"]
 
 # Two prediction horizons per TF (except 1w)
 HORIZONS_BY_TF: Dict[str, List[str]] = {
-    "5m": ["5m", "15m"],
     "15m": ["15m", "1h"],
     "1h": ["1h", "4h"],
-    "4h": ["4h", "1d"],
-    "1d": ["1d", "1w"],
-    "1w": ["1w"],
+    "4h": ["4h", "1d"]
 }
 
 # Horizon-specific thresholds on pct return (future_price / price - 1)
 HORIZON_THRESHOLDS: Dict[str, float] = {
-    "5m": 0.0017,    # 0.17 %
+
     "15m": 0.0029,  # 0.29 %
     "1h": 0.0058,   # 0.58 %
     "4h": 0.012,     # 1.2   %
     "1d": 0.036,     # 3.6   %
-    "1w": 0.113,     # 11.3   %
 }
 
 
@@ -71,14 +67,13 @@ class PipelineConfig:
 
 _TIMEDELTA_MAP = {
     "m": "min",
-    "h": "h",  
-    "d": "D",
-    "w": "W",
+    "h": "h",
+    "d": "D",  
 }
 
 
 def horizon_to_timedelta(h: str) -> pd.Timedelta:
-    """Convert '5m','15m,'1h', '4h', '1d', '1w' to pd.Timedelta."""
+    """Convert '15m,'1h', '4h', '1d' to pd.Timedelta."""
     unit = h[-1]
     value = int(h[:-1])
     if unit not in _TIMEDELTA_MAP:
@@ -106,12 +101,10 @@ def ensure_datetime_index(
 
 # Per-timeframe strong-move thresholds (90th percentile-based)
 HORIZON_THRESHOLDS = {
-    "5m":  0.0017,   # 0.17 %
     "15m": 0.0029,   # 0.29 %
     "1h":  0.0058,   # 0.58 %
     "4h":  0.0120,   # 1.20 %
     "1d":  0.0360,   # 3.60 %
-    "1w":  0.1130,   # 11.30 %
 }
 
 K_NEUTRAL = 0.1  # eps = 10% of strong threshold for that TF
@@ -158,17 +151,8 @@ def classify_direction(
 # Label generation for one DataFrame
 # ---------------------------------------------------------------------
 
-def add_multi_horizon_labels(
-    df: pd.DataFrame,
-    cfg: PipelineConfig,
-) -> pd.DataFrame:
-    """
-    For each horizon H in cfg.horizons, add:
-
-      future_price_H
-      future_return_H
-      label_H in {-2,-1,0,1,2}
-    """
+def add_multi_horizon_labels(df: pd.DataFrame, cfg: PipelineConfig) -> pd.DataFrame:
+    
     df = df.copy()
 
     for h in cfg.horizons:
@@ -178,15 +162,18 @@ def add_multi_horizon_labels(
         future_price_col = f"future_price_{h}"
         future_return_col = f"future_return_{h}"
         label_col = f"label_{h}"
+        large_move_col = f"large_move_{h}"
 
-        # Time-based future price: value at t + horizon
         future_index = df.index + td
         df[future_price_col] = df[cfg.price_col].reindex(future_index).values
         df[future_return_col] = df[future_price_col] / df[cfg.price_col] - 1.0
 
+        # New: large-move indicator (absolute return >= threshold)
+        df[large_move_col] = (df[future_return_col].abs() >= thr).astype(np.int8)
+
+        # Existing directional label logic...
         rets = df[future_return_col].values
         labels = np.zeros_like(rets, dtype=np.int8)
-
         prev_dir = 0
         for i, r in enumerate(rets):
             if np.isnan(r):
@@ -195,7 +182,6 @@ def add_multi_horizon_labels(
                 d = classify_direction(r, prev_dir, thr)
                 labels[i] = d
                 prev_dir = d
-
         df[label_col] = labels
 
     if cfg.drop_incomplete:
@@ -266,7 +252,7 @@ def build_dataset_from_csv(
     Load CSV (processed), add labels, build sliding-window dataset.
 
     Args:
-      csv_path: e.g. 'data/processed/btc_5m_features.csv'
+      csv_path: e.g. 'data/processed/btc_15m_features.csv'
       cfg:      PipelineConfig
       feature_cols: explicit list of feature columns to use as inputs.
       output_dir: if set, saves X, y, t, label_cols as .npy.
@@ -282,7 +268,11 @@ def build_dataset_from_csv(
 
     df = add_multi_horizon_labels(df, cfg)
 
-    label_cols = [f"label_{h}" for h in cfg.horizons]
+    label_cols_cls = [f"label_{h}" for h in cfg.horizons]
+    label_cols_ret = [f"future_return_{h}" for h in cfg.horizons]
+    label_cols_large = [f"large_move_{h}" for h in cfg.horizons]
+
+    label_cols = label_cols_cls + label_cols_ret + label_cols_large
 
     X, y, t = make_sliding_windows(
         df=df,
@@ -291,12 +281,13 @@ def build_dataset_from_csv(
         window_cfg=cfg.window,
     )
 
-    result: Dict[str, np.ndarray] = {
+    result = {
         "X": X,
         "y": y,
         "t": t,
         "label_cols": np.array(label_cols),
     }
+    # saving code stays the same
 
     if output_dir is not None:
         os.makedirs(output_dir, exist_ok=True)
