@@ -1,6 +1,6 @@
 """
 Shared utilities for CryptoPulse AI traditional ML training pipeline.
-Supports ALL timeframes: 5m, 15m, 1h, 4h, 1d, 1w with their respective horizons.
+Supports ALL timeframes: 15m, 1h, 4h with their respective horizons.
 Chronological 70/15/15 splits (train/val/test) to prevent look-ahead bias.
 """
 
@@ -15,15 +15,12 @@ from pathlib import Path
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 import joblib
 
-TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d", "1w"]
+TIMEFRAMES = ["15m", "1h", "4h"]
 
 HORIZONS_BY_TF = {
-    "5m": ["5m", "15m"],
     "15m": ["15m", "1h"], 
     "1h": ["1h", "4h"],
     "4h": ["4h", "1d"],
-    "1d": ["1d", "1w"],
-    "1w": ["1w"]
 }
 
 @dataclass

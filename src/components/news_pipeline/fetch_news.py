@@ -2,10 +2,8 @@ import requests
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-# Get the API key from the environment
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 BASE_URL = "https://newsapi.org/v2"
 
@@ -21,7 +19,7 @@ def fetch_categorized_news():
     headers = {"Authorization": f"Bearer {NEWS_API_KEY}"}
     all_articles = []
 
-    # 1. Fetch Financial News
+    # Financial news
     try:
         financial_params = {
             "language": "en",
@@ -37,9 +35,8 @@ def fetch_categorized_news():
     except requests.exceptions.RequestException as e:
         print(f"Error fetching financial news: {e}")
 
-    # 2. Fetch Geopolitical News
+    # Geopolitical News
     try:
-        # **UPDATE:** Added 'politico' and 'the-economist' to the sources.
         geopolitical_params = {
             "language": "en",
             "sources": "associated-press,bbc-news,politico,the-economist"

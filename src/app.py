@@ -1,0 +1,814 @@
+import random
+from dataclasses import dataclass
+from datetime import datetime, timedelta, date
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+import streamlit.components.v1 as components
+from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
+
+
+# ============ Page config & CSS ============
+
+st.set_page_config(page_title="CryptoPulse AI – BTC/USD", layout="wide")
+
+hide_st_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+div.block-container {padding-top: 0.5rem;}
+</style>
+"""
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+blink_css = """
+<style>
+@keyframes blink-green { 50% { color: #bbf7d0; } }
+@keyframes blink-red { 50% { color: #fecaca; } }
+@keyframes blink-amber { 50% { color: #fef3c7; } }
+
+.blink-green { color:#22c55e; animation: blink-green 1.2s infinite; }
+.blink-red { color:#ef4444; animation: blink-red 1.2s infinite; }
+.blink-amber { color:#f59e0b; animation: blink-amber 1.2s infinite; }
+</style>
+"""
+st.markdown(blink_css, unsafe_allow_html=True)
+
+
+# ============ Helper components ============
+
+def render_range_bar(label: str, low: float, high: float, current: float):
+    """Compact red->green range bar with centered label and prices close to bar."""
+    pct = 0.0 if high == low else max(0.0, min(1.0, (current - low) / (high - low)))
+    bar_html = f"""
+    <div style="margin-top:0.8rem; margin-bottom:0.2rem;">
+      <div style="font-size:0.90rem; font-weight:600; color:#e5e7eb; text-align:center; margin-bottom:0.35rem;">
+        {label}
+      </div>
+      <div style="display:flex; align-items:center; gap:0.5rem;">
+        <div style="flex:1; background-color:#e5e7eb;
+                    border-radius:999px; height:4px;
+                    position:relative; overflow:hidden;">
+          <div style="
+              position:absolute; left:0; top:0; bottom:0;
+              width:{pct*100:.1f}%;
+              background:linear-gradient(90deg,#ef4444,#22c55e);
+              border-radius:999px;">
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:space-between;
+                  font-size:0.78rem; color:#9ca3af; margin-top:0.25rem;">
+        <span>{low:,.0f}</span>
+        <span>{high:,.0f}</span>
+      </div>
+    </div>
+    """
+    st.markdown(bar_html, unsafe_allow_html=True)
+
+
+def render_ta_gauge(title: str, label: str, score: float):
+    """Simple horizontal gauge (0–1) with a pointer and a label like Buy / Sell."""
+    pct = max(0.0, min(1.0, score)) * 100
+    if "Strong Sell" in label or label == "Sell":
+        pill_bg = "rgba(248,113,113,0.12)"
+        pill_fg = "#b91c1c"
+    elif "Strong Buy" in label or label == "Buy":
+        pill_bg = "rgba(34,197,94,0.12)"
+        pill_fg = "#15803d"
+    else:
+        pill_bg = "rgba(148,163,184,0.12)"
+        pill_fg = "#4b5563"
+
+    html = f"""
+    <div style="text-align:center; margin:0.5rem 0 1.0rem 0;">
+      <div style="font-size:0.95rem; font-weight:600; margin-bottom:0.4rem;">
+        {title}
+      </div>
+      <div style="position:relative; height:12px; border-radius:999px;
+                  background:linear-gradient(90deg,#ef4444,#f97316,#22c55e);">
+        <div style="position:absolute; top:-4px; left:{pct:.0f}%;
+                    transform:translateX(-50%);
+                    width:8px; height:20px; border-radius:999px; background:#111827;">
+        </div>
+      </div>
+      <div style="margin-top:0.35rem;">
+        <span style="font-size:0.85rem; padding:0.25rem 0.8rem; border-radius:999px;
+                     background-color:{pill_bg}; color:{pill_fg}; font-weight:600;">
+          {label}
+        </span>
+      </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# ---- Candlestick pattern helpers ----
+
+def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p: float) -> str:
+    """Very simple candlestick pattern classifier (mock but consistent)."""
+    body = abs(close_p - open_p)
+    rng = high_p - low_p if high_p != low_p else 1e-6
+    upper = high_p - max(open_p, close_p)
+    lower = min(open_p, close_p) - low_p
+
+    body_pct = body / rng
+    upper_pct = upper / rng
+    lower_pct = lower / rng
+
+    if body_pct < 0.15 and upper_pct > 0.35 and lower_pct > 0.35:
+        return "Doji"
+    if body_pct > 0.7 and upper_pct < 0.1 and lower_pct < 0.1:
+        return "Marubozu"
+    if body_pct < 0.3 and upper_pct > 0.4 and lower_pct < 0.2:
+        return "Hanging Man"
+    return "Standard"
+
+
+def compatibility_score(prev_pattern: str, next_pattern: str) -> str:
+    """Mock compatibility between previous candle pattern and next predicted candle."""
+    bullish_continuation = {"Marubozu", "Standard"}
+    bearish_reversal = {"Hanging Man", "Doji"}
+    if prev_pattern in bullish_continuation and next_pattern in bullish_continuation:
+        return "High"
+    if prev_pattern in bearish_reversal and next_pattern in bullish_continuation:
+        return "Low"
+    return "Medium"
+
+
+# ============ Mock backend functions ============
+
+@dataclass
+class PredResult:
+    direction: str
+    probability: float
+    summary: str
+    open: float
+    high: float
+    low: float
+    close: float
+    pattern: str
+
+
+def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
+    now = datetime.utcnow()
+    rows = [
+        {
+            "bucket": "Last 30m",
+            "timestamp": now - timedelta(minutes=10),
+            "headline": "BTC ETF inflows hit new weekly high",
+            "sentiment": "positive",
+            "impact": 0.95,
+        },
+        {
+            "bucket": "Last 2h",
+            "timestamp": now - timedelta(hours=1, minutes=15),
+            "headline": "Major exchange experiences brief outage",
+            "sentiment": "negative",
+            "impact": 0.8,
+        },
+        {
+            "bucket": "Last 6h",
+            "timestamp": now - timedelta(hours=4),
+            "headline": "Whale moves large BTC tranche to exchange",
+            "sentiment": "negative",
+            "impact": 0.65,
+        },
+        {
+            "bucket": "Last 24h",
+            "timestamp": now - timedelta(hours=14),
+            "headline": "On-chain activity rises amid renewed interest",
+            "sentiment": "neutral",
+            "impact": 0.4,
+        },
+        {
+            "bucket": "Older",
+            "timestamp": now - timedelta(days=1, hours=5),
+            "headline": "Macro data comes in line with expectations",
+            "sentiment": "neutral",
+            "impact": 0.2,
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+def get_indicator_states(symbol: str, timeframe: str):
+    return {
+        "RSI": "Bullish (above 55)",
+        "MACD": "Sideways (flat histogram)",
+        "MA50 vs MA200": "Bullish (golden cross)",
+        "Bollinger Bands": "High volatility (near upper band)",
+        "Volume": "Above recent average",
+    }
+
+
+def get_current_trend(symbol: str, timeframe: str) -> str:
+    return "Uptrend"
+
+
+def get_next_candle_pred(symbol: str, timeframe: str) -> PredResult:
+    base_conf = {
+        "5m": 0.72,
+        "15m": 0.68,
+        "1h": 0.64,
+        "4h": 0.60,
+        "1d": 0.57,
+    }.get(timeframe, 0.6)
+
+    direction = "Bullish"
+    o = 70020.0
+    h = 70300.0
+    l = 69950.0
+    c = 70250.0
+
+    pattern = classify_candle_pattern(o, h, l, c)
+    summary = (
+        f"Mock prediction: {symbol} shows a modestly {direction.lower()} bias on the "
+        f"{timeframe} timeframe based on combined model signals."
+    )
+
+    return PredResult(
+        direction=direction,
+        probability=base_conf,
+        summary=summary,
+        open=o,
+        high=h,
+        low=l,
+        close=c,
+        pattern=pattern,
+    )
+
+
+def get_mock_prediction_history() -> pd.DataFrame:
+    records = []
+    today = date.today()
+    days = 180
+    for i in range(days):
+        d = today - timedelta(days=days - 1 - i)
+        prediction = random.choice(["Bullish", "Bearish"])
+        actual = random.choice(["Up", "Down"])
+        correct = (prediction == "Bullish" and actual == "Up") or (
+            prediction == "Bearish" and actual == "Down"
+        )
+        pnl = 0.01 if correct else -0.005
+        records.append(
+            {
+                "date": d,
+                "timeframe": "1h",
+                "prediction": prediction,
+                "actual_move": actual,
+                "correct": correct,
+                "pnl_pct": pnl,
+            }
+        )
+    return pd.DataFrame(records)
+
+
+def ask_ai_trade_assistant(level: float, direction: str, timeframe: str, message: str):
+    if level is None:
+        return "Please provide a key price level so I can reason about a breakdown / breakout."
+    direction_txt = "breakdown below" if direction == "Breakdown" else "breakout above"
+    return (
+        f"Assuming a {direction_txt} {level:.0f} on the {timeframe} chart:\n\n"
+        f"- RSI should ideally confirm the move (dropping below 50 on breakdown, above 60 on breakout).\n"
+        f"- MACD should either be already crossed in the {direction.lower()} direction or crossing at the move.\n"
+        f"- Volume should expand compared to the last few candles to avoid a fake move.\n\n"
+        "You can tighten or relax these conditions depending on your risk tolerance."
+    )
+
+
+# ============ TradingView chart embed ============
+
+def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", height: int = 520):
+    symbol_tv = symbol.replace("USDT", "USD").replace("USDC", "USD")
+    html = f"""
+    <!-- TradingView Widget BEGIN -->
+    <div class="tradingview-widget-container">
+      <div id="tradingview_chart" style="height:{height}px;"></div>
+      <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+      <script type="text/javascript">
+        new TradingView.widget({{
+          "width": "100%",
+          "height": {height},
+          "symbol": "{symbol_tv}",
+          "interval": "{interval}",
+          "timezone": "Etc/UTC",
+          "theme": "light",
+          "style": "1",
+          "locale": "en",
+          "toolbar_bg": "#f1f3f6",
+          "hide_top_toolbar": false,
+          "hide_side_toolbar": false,
+          "allow_symbol_change": false,
+          "withdateranges": true,
+          "details": false,
+          "hotlist": false,
+          "calendar": false,
+          "studies": [],
+          "container_id": "tradingview_chart"
+        }});
+      </script>
+    </div>
+    <!-- TradingView Widget END -->
+    """
+    components.html(html, height=height + 40, scrolling=False)
+
+
+# ============ UI ============
+
+def main():
+    # ----- Top bar -----
+    st.markdown(
+        """
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;
+                    padding:0.75rem 0.5rem 0.5rem 0.5rem; border-bottom:1px solid #e5e7eb;">
+          <div style="display:flex; flex-direction:column;">
+            <div style="font-size:1.3rem; font-weight:600;">
+              Bitcoin <span style="color:#6b7280; font-weight:400;">(BTC/USD)</span>
+            </div>
+            <div style="margin-top:0.4rem; display:flex; align-items:baseline; gap:0.6rem;">
+              <span style="font-size:2rem; font-weight:600;">69,936.8</span>
+              <span style="color:#16a34a; font-weight:600;">+477.2 (+0.69%)</span>
+            </div>
+            <div style="margin-top:0.1rem; color:#6b7280; font-size:0.85rem;">
+              Real-time data · Mock feed
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.4rem;">
+            <div style="display:flex; gap:0.5rem;">
+              <button style="background-color:#2563eb;color:white;border:none;
+                             padding:0.35rem 0.8rem;border-radius:4px;font-size:0.85rem;">
+                ★ Add to Watchlist
+              </button>
+            </div>
+            <div style="display:flex; gap:0.5rem; margin-top:0.25rem;">
+              <button style="background-color:#16a34a;color:white;border:none;
+                             padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">
+                Buy
+              </button>
+              <button style="background-color:#dc2626;color:white;border:none;
+                             padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">
+                Sell
+              </button>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ----- Controls row + ranges -----
+    col_l, col_r = st.columns([3, 1])
+    with col_l:
+        # shrink dropdown widths by using three columns and leaving some empty space
+        c1, c_spacer, c2 = st.columns([1.2, 0.4, 1.2])
+        with c1:
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>",
+                        unsafe_allow_html=True)
+            symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+                                  index=0, label_visibility="collapsed", key="symbol_dd")
+        with c2:
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
+                        unsafe_allow_html=True)
+            timeframe = st.selectbox("Timeframe", ["5m", "15m", "1h", "4h", "1d"],
+                                     index=0, label_visibility="collapsed", key="tf_dd")
+    with col_r:
+        st.markdown("<div style='height:1.4rem;'></div>", unsafe_allow_html=True)
+        # button + tooltip very close, aligned with dropdown row
+        bcol, icol = st.columns([1.0, 0.25])
+        with bcol:
+            st.button("Refresh", type="primary")
+        with icol:
+            st.markdown(
+                """
+                <div style="display:flex; align-items:center; height:100%;">
+                  <span title="Auto-refreshes every 5 minutes"
+                        style="font-size:1.0rem; color:#e5e7eb; cursor:help; margin-left:0.15rem;">
+                    ⓘ
+                  </span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    # Auto-refresh every 5 minutes
+    _ = st_autorefresh(interval=5 * 60 * 1000, key="dashboard_refresh")
+
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        render_range_bar("Day's Range", 69493.2, 71347.1, 70456.0)
+    with col_r2:
+        render_range_bar("52 wk Range", 60187.0, 126186.0, 70456.0)
+
+    # Prediction for current symbol/timeframe
+    pred = get_next_candle_pred(symbol, timeframe)
+
+    # ----- Tabs -----
+    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(
+        ["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"]
+    )
+
+    # ===== GENERAL TAB =====
+    with tab_general:
+        st.subheader("About Bitcoin", anchor=False)
+        st.write(
+            "Bitcoin is the first decentralized cryptocurrency, designed as a peer‑to‑peer "
+            "digital cash system without a central authority. It trades 24/7 on global "
+            "crypto exchanges and is often used both as a speculative asset and a store "
+            "of value narrative. This dashboard focuses on short‑term technical signals "
+            "and research, not financial advice."
+        )
+        st.caption("Educational overview only – not investment advice.")
+
+        st.markdown("---")
+        st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
+
+        sentiment = st.radio(
+            label=" ",
+            options=[
+                "Bullish (green)",
+                "Bearish (red)",
+            ],
+            index=None,
+            horizontal=True,
+            key="general_sentiment",
+        )
+
+        if sentiment:
+            st.markdown(
+                "<span style='font-size:0.9rem; color:#9ca3af;'>"
+                "Cool, let's validate your view with our prediction model on the <b>Chart</b> tab."
+                "</span>",
+                unsafe_allow_html=True,
+            )
+
+    # ===== CHART TAB =====
+    with tab_chart:
+        # --- mock last 6 real candles for pattern analysis ---
+        last_6 = []
+        base_price = 70600.0
+        for _ in range(6):
+            o = base_price + random.uniform(-150, 150)
+            c = o + random.uniform(-120, 120)
+            high = max(o, c) + random.uniform(10, 80)
+            low = min(o, c) - random.uniform(10, 80)
+            last_6.append({"open": o, "high": high, "low": low, "close": c})
+            base_price = c
+
+        prev_patterns = []
+        for row in last_6[:-1]:
+            patt = classify_candle_pattern(row["open"], row["high"], row["low"], row["close"])
+            prev_patterns.append(patt)
+
+        prev_pattern = prev_patterns[-1] if prev_patterns else "Standard"
+        compat = compatibility_score(prev_pattern, pred.pattern)
+
+        chart_container = st.container()
+        rationale_container = st.container()
+        ai_container = st.container()
+
+        with chart_container:
+            left, right = st.columns([3, 1])
+
+            with left:
+                st.markdown(
+                    "<div style='font-size:1.1rem; font-weight:600;'>"
+                    "● <span style='color:#22c55e;'>Live</span>"
+                    "<span style='margin-left:0.35rem;'>BTC</span>"
+                    "<span style='font-size:0.9rem; color:#6b7280;'> (BTC/USDT)</span>"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                interval_map = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+                interval = interval_map.get(timeframe, "60")
+                render_tradingview_chart(symbol.replace("USDT", "USD"), interval=interval)
+
+            with right:
+                st.markdown(
+                    f"<div style='font-size:1.1rem; font-weight:600;'>"
+                    f"Next {timeframe} prediction</div>",
+                    unsafe_allow_html=True,
+                )
+
+                current_trend = get_current_trend(symbol, timeframe)
+
+                if pred.direction == "Bullish":
+                    dir_class = "blink-green"
+                elif pred.direction == "Bearish":
+                    dir_class = "blink-red"
+                else:
+                    dir_class = "blink-amber"
+
+                st.markdown(
+                    f"""
+                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:0.4rem;">
+                      <div>
+                        <div style="font-size:0.85rem; color:#9ca3af;">Direction</div>
+                        <div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">
+                          {pred.direction}
+                        </div>
+                      </div>
+                      <div style="text-align:right;">
+                        <div style="font-size:0.85rem; color:#9ca3af;">Confidence</div>
+                        <div style="font-size:1.4rem; font-weight:600;">
+                          {pred.probability*100:.1f}%
+                        </div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(
+                    f"<div style='font-size:0.80rem; color:#9ca3af; margin-top:0.25rem;'>"
+                    f"Candlestick pattern: <b>{pred.pattern}</b> (mock)</div>",
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(
+                    "<div style='margin-top:0.75rem; font-size:0.85rem; color:#9ca3af;'>"
+                    "Next candle (mock)</div>",
+                    unsafe_allow_html=True,
+                )
+
+                mini_fig = go.Figure(
+                    data=[
+                        go.Candlestick(
+                            x=[0],
+                            open=[pred.open],
+                            high=[pred.high],
+                            low=[pred.low],
+                            close=[pred.close],
+                            increasing_line_color="#16a34a",
+                            decreasing_line_color="#dc2626",
+                            increasing_fillcolor="rgba(22,163,74,0.5)",
+                            decreasing_fillcolor="rgba(220,38,38,0.5)",
+                            showlegend=False,
+                        )
+                    ]
+                )
+                mini_fig.update_layout(
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    xaxis=dict(visible=False, showgrid=False, zeroline=False),
+                    yaxis=dict(
+                        title="Price",
+                        showgrid=True,
+                        gridcolor="#1f2937",
+                        zeroline=False,
+                    ),
+                    paper_bgcolor="#020617",
+                    plot_bgcolor="#020617",
+                )
+                st.plotly_chart(mini_fig, use_container_width=True, height=220)
+
+        with rationale_container:
+            st.markdown("---")
+            st.markdown(
+                "<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>",
+                unsafe_allow_html=True,
+            )
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                st.markdown(
+                    f"""
+                    - Price is trading above key moving averages, supporting a bullish bias.
+                    - RSI is in bullish territory without major divergence.
+                    - Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{pred.pattern}**.
+                    - Pattern compatibility between previous and next candle is **{compat}**.
+                    """,
+                )
+            with col_r2:
+                st.markdown(
+                    """
+                    - Recent candles show higher lows, consistent with an uptrend.
+                    - No major negative headlines in the latest news heatmap buckets.
+                    - Volumes are near or above recent averages.
+                    """,
+                )
+
+        with ai_container:
+            st.markdown("---")
+            st.markdown("### AI trade assistant (mock backend)", unsafe_allow_html=True)
+
+            col_left, col_right = st.columns([2, 1])
+            with col_left:
+                st.write(
+                    "Describe your scenario, e.g. "
+                    "`If we get a breakdown of 68,000 on 1h, what should RSI/MACD/volume look like?`"
+                )
+                key_level = st.number_input(
+                    "Key level (trendline / support / resistance)", value=68000.0, step=100.0
+                )
+                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"], index=0)
+                user_msg = st.text_area(
+                    "Your question to the AI",
+                    value="If we get a breakdown of this level, what should indicators look like to justify a short?",
+                    height=100,
+                )
+                ask_btn = st.button("Ask AI about this scenario")
+
+                ai_response = None
+                if ask_btn:
+                    ai_response = ask_ai_trade_assistant(
+                        level=key_level,
+                        direction=move_type,
+                        timeframe=timeframe,
+                        message=user_msg,
+                    )
+
+                if ai_response:
+                    st.markdown("**AI response (mock):**")
+                    st.write(ai_response)
+
+            with col_right:
+                st.write("Attach current chart screenshot (optional)")
+                uploaded_img = st.file_uploader(
+                    "Paste/upload chart image (PNG/JPG)",
+                    type=["png", "jpg", "jpeg"],
+                    accept_multiple_files=False,
+                )
+                if uploaded_img is not None:
+                    st.image(uploaded_img, caption="Attached chart for AI context", use_column_width=True)
+                    st.caption(
+                        "In the real system, this image would be sent to the AI backend "
+                        "so it can see your exact drawings."
+                    )
+
+    # ===== LATEST HOT NEWS TAB =====
+    with tab_news:
+        st.subheader("Latest Hot News (mock)", anchor=False)
+        news_df = get_news_heatmap_data(symbol, timeframe)
+        for _, row in news_df.iterrows():
+            impact = row["impact"]
+            if impact > 0.8:
+                bg = "#fee2e2"
+                border = "#ef4444"
+            elif impact > 0.5:
+                bg = "#fef3c7"
+                border = "#f59e0b"
+            else:
+                bg = "#dcfce7"
+                border = "#22c55e"
+            st.markdown(
+                f"""
+                <div style="border-left:4px solid {border};
+                            background-color:{bg};
+                            padding:0.5rem 0.75rem;
+                            margin-bottom:0.4rem;
+                            border-radius:4px;">
+                  <div style="font-size:0.8rem; color:#4b5563;">
+                    {row['bucket']} · {row['sentiment'].capitalize()}
+                  </div>
+                  <div style="font-size:0.95rem; font-weight:500; margin-top:0.05rem; color:#111827;">
+                    {row['headline']}
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.caption("Red = hot / recent, amber = medium, green = older or lower impact (mock data).")
+
+    # ===== TECHNICAL ANALYSIS TAB =====
+    with tab_tech:
+        st.subheader("Technical Analysis", anchor=False)
+        ta_tf = st.radio(
+            "Timeframe",
+            options=["15m", "1H", "4H", "1D"],
+            horizontal=True,
+            index=1,
+            key="tech_ta_tf",
+        )
+        if ta_tf == "15m":
+            ti_label, ti_score = "Buy", 0.65
+            ma_label, ma_score = "Strong Buy", 0.80
+            sum_label, sum_score = "Buy", 0.70
+        elif ta_tf == "1H":
+            ti_label, ti_score = "Buy", 0.60
+            ma_label, ma_score = "Buy", 0.65
+            sum_label, sum_score = "Buy", 0.62
+        elif ta_tf == "4H":
+            ti_label, ti_score = "Neutral", 0.50
+            ma_label, ma_score = "Neutral", 0.50
+            sum_label, sum_score = "Neutral", 0.50
+        else:
+            ti_label, ti_score = "Sell", 0.35
+            ma_label, ma_score = "Sell", 0.30
+            sum_label, sum_score = "Sell", 0.32
+
+        c_ti, c_sum, c_ma = st.columns(3)
+        with c_ti:
+            render_ta_gauge("Technical Indicators", ti_label, ti_score)
+        with c_sum:
+            render_ta_gauge("Summary", sum_label, sum_score)
+        with c_ma:
+            render_ta_gauge("Moving Averages", ma_label, ma_score)
+
+        st.markdown("---")
+        st.subheader("Key technical indicators", anchor=False)
+
+        indicator_states = get_indicator_states(symbol, timeframe)
+        rows = []
+        trend = get_current_trend(symbol, timeframe)
+        for name, state in indicator_states.items():
+            if "Bullish" in state and trend == "Uptrend":
+                support = "Supports uptrend"
+            elif "Bearish" in state and trend == "Downtrend":
+                support = "Supports downtrend"
+            else:
+                support = "Neutral / mixed"
+            rows.append(
+                {
+                    "Indicator": name,
+                    "Status": state,
+                    "Trend support": support,
+                }
+            )
+        tech_df = pd.DataFrame(rows)
+        st.dataframe(tech_df, use_container_width=True)
+        st.caption(
+            "Mock values for now – this view will later be driven by real indicator "
+            "calculations for the selected symbol and timeframe."
+        )
+
+    # ===== HISTORICAL ANALYSIS TAB =====
+    with tab_history:
+        st.subheader("Historical analysis (mock)", anchor=False)
+
+        st.markdown("### Previous model predictions – hit/miss (mock)", unsafe_allow_html=True)
+        hist_df = get_mock_prediction_history()
+        lookback_label = st.selectbox(
+            "Lookback window",
+            ["1 month", "3 months", "6 months"],
+            index=2,
+            key="hist_lookback_window",
+        )
+        days_map_hist = {"1 month": 30, "3 months": 90, "6 months": 180}
+        days_hist = days_map_hist[lookback_label]
+        cutoff = date.today() - timedelta(days=days_hist)
+        filt = hist_df[hist_df["date"] >= cutoff]
+
+        if not filt.empty:
+            accuracy = filt["correct"].mean()
+            total_trades = len(filt)
+            correct_trades = int(filt["correct"].sum())
+            st.write(
+                f"- Total trades (mock): **{total_trades}**, "
+                f"correct: **{correct_trades}**, "
+                f"accuracy: **{accuracy*100:.1f}%**."
+            )
+            st.dataframe(
+                filt.sort_values("date", ascending=False)[
+                    ["date", "timeframe", "prediction", "actual_move", "correct", "pnl_pct"]
+                ],
+                use_container_width=True,
+                height=220,
+            )
+        else:
+            st.write("No mock prediction data in this window yet.")
+
+        st.markdown("---")
+        st.markdown("### Hypothetical returns calculator (mock)", unsafe_allow_html=True)
+
+        col_cap, col_lb = st.columns(2)
+        with col_cap:
+            initial_capital = st.number_input(
+                "Starting capital (€)",
+                min_value=1000.0,
+                value=10000.0,
+                step=500.0,
+                key="hist_initial_capital",
+            )
+        with col_lb:
+            rb_label = st.selectbox(
+                "Backtest window",
+                ["1 month", "3 months", "6 months"],
+                index=1,
+                key="hist_backtest_window",
+            )
+
+        days_map_rb = {"1 month": 30, "3 months": 90, "6 months": 180}
+        rb_days = days_map_rb[rb_label]
+        rb_cutoff = date.today() - timedelta(days=rb_days)
+        rb_hist = hist_df[hist_df["date"] >= rb_cutoff]
+
+        if not rb_hist.empty:
+            final_capital = initial_capital
+            for pct in rb_hist["pnl_pct"]:
+                final_capital *= (1 + pct)
+            total_return = (final_capital / initial_capital) - 1.0
+
+            st.write(
+                f"If you had traded all mock signals over **{rb_label}** "
+                f"with an initial capital of **€{initial_capital:,.0f}**, "
+                f"your capital would be **€{final_capital:,.0f}** "
+                f"(**{total_return*100:.1f}%** return)."
+            )
+        else:
+            st.write("Not enough mock history to compute returns in this window.")
+
+
+if __name__ == "__main__":
+    main()

@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger('CryptoScheduler')
 
 client = Client()
-TIMEFRAMES = ['3m', '5m', '15m', '1h', '4h', '1d', '1w']
+TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
 def update_timeframe(tf, max_retries=3):
     csv_path = f'../../data/raw/btc_{tf}_raw.csv'
@@ -87,15 +87,15 @@ scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
 
 scheduler.add_job(update_all, 'cron', hour=3, id='daily_full', name='Daily Full')
 scheduler.add_job(
-    lambda: [update_timeframe(tf) for tf in ['3m', '5m', '15m', '1h', '4h']], 
-    'interval', minutes=15, id='frequent_tfs', name='Frequent TFs'
+    lambda: [update_timeframe(tf) for tf in ['15m', '1h', '4h']], 
+    'interval', minutes=10, id='frequent_tfs', name='Frequent TFs'
 )
 
 scheduler.start()
 logger.info("""
 🚀 Multi-TF Scheduler Active:
-├── Daily 3AM: All 7 TFs
-└── Every 15min: 3m,5m,15m,1h,4h (live trading)
+├── Daily 3AM: All TFs
+└── Every 10min: 15m,1h,4h (live trading)
 Logs: ../../logs/scheduler.log
 Press Ctrl+C to stop
 """)
