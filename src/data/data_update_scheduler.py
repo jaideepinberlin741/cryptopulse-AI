@@ -9,10 +9,14 @@ import os
 from datetime import datetime
 import traceback
 import time
+from src.features.process_pipeline_all_tf import engineer_features_all_timeframes
 
 # Logging setup
-log_dir = '../../logs'
+
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+log_dir = os.path.join(BASE_DIR, "logs")
 os.makedirs(log_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -23,44 +27,59 @@ logging.basicConfig(
 )
 logger = logging.getLogger('CryptoScheduler')
 
+# NEW: path setup (must come AFTER logger is defined)
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
+PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
+
+logger.info(f"BASE_DIR={BASE_DIR}")
+logger.info(f"RAW_DIR={RAW_DIR}")
+logger.info(f"PROCESSED_DIR={PROCESSED_DIR}")
+
 client = Client()
 TIMEFRAMES = ['15m', '1h', '4h', '1d']
 
 def update_timeframe(tf, max_retries=3):
-    csv_path = f'../../data/raw/btc_{tf}_raw.csv'
-    
+    csv_path = os.path.join(RAW_DIR, f"btc_{tf}_raw.csv")
+
     for attempt in range(max_retries):
         try:
             if not os.path.exists(csv_path):
                 logger.warning(f"Missing {csv_path}")
                 return
-            
+
+            # Load existing raw data
             df = pd.read_csv(csv_path)
-            df['open_time'] = pd.to_datetime(df['open_time'])  
-            last_ts = df['open_time'].max().timestamp() * 1000 
-            
-            logger.debug(f"{tf}: Last TS = {df['open_time'].max()}")
-            
+            df['open_time'] = pd.to_datetime(df['open_time'])
+            last_dt = df['open_time'].max()
+
+            # Fetch new klines (12 fields from Binance)
             klines = client.get_historical_klines('BTCUSDT', tf, limit=10)
             new_df = pd.DataFrame(klines, columns=[
                 'open_time', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_vol', 'trades', 'taker_buy_base', 'taker_buy_quote', 'ignore'
+                'close_time', 'quote_vol', 'trades',
+                'taker_buy_base', 'taker_buy_quote', 'ignore'
             ])
-            new_df[['open', 'high', 'low', 'close', 'volume']] = new_df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+            # Reduce to 6-column raw schema BEFORE any writing
+            new_df = new_df[['open_time', 'open', 'high', 'low', 'close', 'volume']]
+            new_df[['open', 'high', 'low', 'close', 'volume']] = (
+                new_df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+            )
             new_df['open_time'] = pd.to_datetime(new_df['open_time'], unit='ms')
-          
-            new_rows = new_df[new_df['open_time'].dt.timestamp * 1000 > last_ts]
-            
+
+            # Filter only genuinely new bars
+            new_rows = new_df[new_df['open_time'] > last_dt]
+
             if len(new_rows) > 0:
-                mode = 'a' if os.path.exists(csv_path) else 'w'
-                header = not os.path.exists(csv_path)
-                new_rows.to_csv(csv_path, mode=mode, header=header, index=False)
-                logger.info(f"✅ {tf}: +{len(new_rows)} bars (latest: {new_rows['open_time'].max()})")
-                return
+                new_rows.to_csv(csv_path, mode='a', header=False, index=False)
+                logger.info(
+                    f"✅ {tf}: +{len(new_rows)} bars "
+                    f"(latest: {new_rows['open_time'].max()})"
+                )
             else:
                 logger.debug(f"{tf}: No new data")
-                return
-                
+            return
+
         except Exception as e:
             logger.error(f"❌ {tf} #{attempt+1}: {e}")
             logger.debug(traceback.format_exc())
@@ -71,7 +90,14 @@ def update_all():
     logger.info("🔄 Full update cycle")
     for tf in TIMEFRAMES:
         update_timeframe(tf)
-    logger.info("✅ Cycle complete")
+
+    logger.info("📐 Running feature engineering for updated TFs")
+    engineer_features_all_timeframes(
+        timeframes=TIMEFRAMES,
+        raw_dir=RAW_DIR,
+        processed_dir=PROCESSED_DIR,
+    )
+    logger.info("✅ Cycle + feature update complete")
 
 # Event listener
 def job_listener(event):
@@ -81,14 +107,26 @@ def job_listener(event):
     else:
         logger.debug(f"✅ Job '{job.name}' completed")
 
+def update_frequent_tfs():
+    for tf in ['15m', '1h', '4h']:
+        update_timeframe(tf)
+    engineer_features_all_timeframes(
+        timeframes=['15m', '1h', '4h'],
+        raw_dir=RAW_DIR,
+        processed_dir=PROCESSED_DIR,
+    )
+
 # Multi-frequency scheduler
 scheduler = BackgroundScheduler()
 scheduler.add_listener(job_listener, EVENT_JOB_ERROR | EVENT_JOB_EXECUTED)
 
 scheduler.add_job(update_all, 'cron', hour=3, id='daily_full', name='Daily Full')
 scheduler.add_job(
-    lambda: [update_timeframe(tf) for tf in ['15m', '1h', '4h']], 
-    'interval', minutes=10, id='frequent_tfs', name='Frequent TFs'
+    update_frequent_tfs,
+    'interval',
+    minutes=10,
+    id='frequent_tfs',
+    name='Frequent TFs (raw + features)'
 )
 
 scheduler.start()

@@ -6,7 +6,7 @@ from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
 
 
-TIMEFRAMES = ["3m", "5m", "15m", "1h", "4h", "1d", "1w"]
+TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
 
 def engineer_features_for_file(input_csv: str, output_csv: str) -> pd.DataFrame:

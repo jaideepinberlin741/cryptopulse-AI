@@ -32,6 +32,8 @@ KEY_CONFIGS = [
     ("15m", "1h"),
     ("1h", "1h"),
     ("1h", "4h"),
+    ("4h", "4h"),
+    ("4h", "1d"),
 ]
 
 IDX_TO_CLASS = {
@@ -55,6 +57,7 @@ FEATURE_COLS = [
 FEATURE_CSV_BY_TF: Dict[str, str] = {
     "15m": "data/processed/btc_15m_features.csv",
     "1h": "data/processed/btc_1h_features.csv",
+    "4h": "data/processed/btc_4h_features.csv",
 }
 
 
