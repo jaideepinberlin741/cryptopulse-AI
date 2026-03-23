@@ -24,8 +24,8 @@ import pandas as pd
 
 from xgboost import XGBClassifier, XGBRegressor
 
-from src.models.train_utils import TrainingConfig, get_model_paths
-from src.features.label_pipeline import ensure_datetime_index 
+from models.train_utils import TrainingConfig, get_model_paths
+from features.label_pipeline import ensure_datetime_index
 
 
 # Must match LABEL_MAP / CLASS_NAMES in xgboost_model.py

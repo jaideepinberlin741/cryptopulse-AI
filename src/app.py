@@ -1,12 +1,12 @@
 import random
-from dataclasses import dataclass
 from datetime import datetime, timedelta, date
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
-from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
+from streamlit_autorefresh import st_autorefresh
+from live.infer_xgb import get_predictions_for_chart
 
 
 # ============ Page config & CSS ============
@@ -138,19 +138,34 @@ def compatibility_score(prev_pattern: str, next_pattern: str) -> str:
     return "Medium"
 
 
+# ============ Real prediction helper ============
+
+MODEL_TF_MAP = {
+    "15m": "15m",
+    "1h": "1h",
+    "4h": "4h",
+    "1d": "4h",  # 1d chart uses 4h models (4h→4h, 4h→1d)
+}
+
+
+def get_next_candle_prediction(ui_timeframe: str, horizon_mode: str = "current") -> dict:
+    """
+    Use get_predictions_for_chart(chart_tf) with UI timeframe mapping.
+
+    ui_timeframe: 15m, 1h, 4h, 1d (what user selects)
+    chart_tf    : 15m, 1h, 4h (what models support)
+    horizon_mode: 'current' -> first config (tf→tf), 'next' -> second (tf→next_tf)
+    """
+    if ui_timeframe not in MODEL_TF_MAP:
+        raise ValueError(f"Unsupported UI timeframe: {ui_timeframe}")
+    chart_tf = MODEL_TF_MAP[ui_timeframe]
+    predictions = get_predictions_for_chart(chart_tf)
+    if not isinstance(predictions, (list, tuple)) or len(predictions) < 2:
+        raise ValueError("get_predictions_for_chart must return at least two prediction dicts.")
+    return predictions[0] if horizon_mode == "current" else predictions[1]
+
+
 # ============ Mock backend functions ============
-
-@dataclass
-class PredResult:
-    direction: str
-    probability: float
-    summary: str
-    open: float
-    high: float
-    low: float
-    close: float
-    pattern: str
-
 
 def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
     now = datetime.utcnow()
@@ -206,39 +221,6 @@ def get_indicator_states(symbol: str, timeframe: str):
 
 def get_current_trend(symbol: str, timeframe: str) -> str:
     return "Uptrend"
-
-
-def get_next_candle_pred(symbol: str, timeframe: str) -> PredResult:
-    base_conf = {
-        "5m": 0.72,
-        "15m": 0.68,
-        "1h": 0.64,
-        "4h": 0.60,
-        "1d": 0.57,
-    }.get(timeframe, 0.6)
-
-    direction = "Bullish"
-    o = 70020.0
-    h = 70300.0
-    l = 69950.0
-    c = 70250.0
-
-    pattern = classify_candle_pattern(o, h, l, c)
-    summary = (
-        f"Mock prediction: {symbol} shows a modestly {direction.lower()} bias on the "
-        f"{timeframe} timeframe based on combined model signals."
-    )
-
-    return PredResult(
-        direction=direction,
-        probability=base_conf,
-        summary=summary,
-        open=o,
-        high=h,
-        low=l,
-        close=c,
-        pattern=pattern,
-    )
 
 
 def get_mock_prediction_history() -> pd.DataFrame:
@@ -363,21 +345,33 @@ def main():
     # ----- Controls row + ranges -----
     col_l, col_r = st.columns([3, 1])
     with col_l:
-        # shrink dropdown widths by using three columns and leaving some empty space
         c1, c_spacer, c2 = st.columns([1.2, 0.4, 1.2])
         with c1:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>",
-                        unsafe_allow_html=True)
-            symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-                                  index=0, label_visibility="collapsed", key="symbol_dd")
+            st.markdown(
+                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>",
+                unsafe_allow_html=True,
+            )
+            symbol = st.selectbox(
+                "Symbol",
+                ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+                index=0,
+                label_visibility="collapsed",
+                key="symbol_dd",
+            )
         with c2:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
-                        unsafe_allow_html=True)
-            timeframe = st.selectbox("Timeframe", ["5m", "15m", "1h", "4h", "1d"],
-                                     index=0, label_visibility="collapsed", key="tf_dd")
+            st.markdown(
+                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
+                unsafe_allow_html=True,
+            )
+            ui_timeframe = st.selectbox(
+                "Timeframe",
+                ["15m", "1h", "4h", "1d"],
+                index=1,
+                label_visibility="collapsed",
+                key="tf_dd",
+            )
     with col_r:
         st.markdown("<div style='height:1.4rem;'></div>", unsafe_allow_html=True)
-        # button + tooltip very close, aligned with dropdown row
         bcol, icol = st.columns([1.0, 0.25])
         with bcol:
             st.button("Refresh", type="primary")
@@ -402,9 +396,6 @@ def main():
         render_range_bar("Day's Range", 69493.2, 71347.1, 70456.0)
     with col_r2:
         render_range_bar("52 wk Range", 60187.0, 126186.0, 70456.0)
-
-    # Prediction for current symbol/timeframe
-    pred = get_next_candle_pred(symbol, timeframe)
 
     # ----- Tabs -----
     tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(
@@ -464,7 +455,6 @@ def main():
             prev_patterns.append(patt)
 
         prev_pattern = prev_patterns[-1] if prev_patterns else "Standard"
-        compat = compatibility_score(prev_pattern, pred.pattern)
 
         chart_container = st.container()
         rationale_container = st.container()
@@ -482,25 +472,41 @@ def main():
                     "</div>",
                     unsafe_allow_html=True,
                 )
-                interval_map = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
-                interval = interval_map.get(timeframe, "60")
+                interval_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+                interval = interval_map.get(ui_timeframe, "60")
                 render_tradingview_chart(symbol.replace("USDT", "USD"), interval=interval)
 
             with right:
                 st.markdown(
                     f"<div style='font-size:1.1rem; font-weight:600;'>"
-                    f"Next {timeframe} prediction</div>",
+                    f"Next {ui_timeframe} prediction</div>",
                     unsafe_allow_html=True,
                 )
 
-                current_trend = get_current_trend(symbol, timeframe)
+                # Horizon toggle
+                pred_mode_label = st.radio(
+                    "Horizon",
+                    ["Current TF", "Next TF"],
+                    horizontal=True,
+                    key=f"pred_mode_{ui_timeframe}",
+                )
+                horizon_mode = "current" if pred_mode_label == "Current TF" else "next"
 
-                if pred.direction == "Bullish":
+                # Real model prediction
+                pred = get_next_candle_prediction(ui_timeframe, horizon_mode=horizon_mode)
+
+                direction = pred.get("direction", "Neutral")
+                if direction in ["Bullish", "SideBull"]:
                     dir_class = "blink-green"
-                elif pred.direction == "Bearish":
+                elif direction in ["Bearish", "SideBear"]:
                     dir_class = "blink-red"
                 else:
                     dir_class = "blink-amber"
+
+                confidence = float(pred.get("confidence", 0.0))
+                asof = pred.get("as_of", "n/a")
+                tf_in = pred.get("timeframe", MODEL_TF_MAP.get(ui_timeframe, ui_timeframe))
+                tf_out = pred.get("horizon", ui_timeframe)
 
                 st.markdown(
                     f"""
@@ -508,13 +514,13 @@ def main():
                       <div>
                         <div style="font-size:0.85rem; color:#9ca3af;">Direction</div>
                         <div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">
-                          {pred.direction}
+                          {direction}
                         </div>
                       </div>
                       <div style="text-align:right;">
                         <div style="font-size:0.85rem; color:#9ca3af;">Confidence</div>
                         <div style="font-size:1.4rem; font-weight:600;">
-                          {pred.probability*100:.1f}%
+                          {confidence:.1%}
                         </div>
                       </div>
                     </div>
@@ -523,46 +529,21 @@ def main():
                 )
 
                 st.markdown(
-                    f"<div style='font-size:0.80rem; color:#9ca3af; margin-top:0.25rem;'>"
-                    f"Candlestick pattern: <b>{pred.pattern}</b> (mock)</div>",
+                    f"""
+                    <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">
+                      Model input: <b>{asof}</b> · {tf_in} → {tf_out}
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
+                # Placeholder for future mini-chart
                 st.markdown(
-                    "<div style='margin-top:0.75rem; font-size:0.85rem; color:#9ca3af;'>"
-                    "Next candle (mock)</div>",
+                    "<div style='font-size:0.80rem; color:#6b7280; margin-top:0.75rem;'>"
+                    "Mini prediction chart (5 candles + forecast) will appear here in the next step."
+                    "</div>",
                     unsafe_allow_html=True,
                 )
-
-                mini_fig = go.Figure(
-                    data=[
-                        go.Candlestick(
-                            x=[0],
-                            open=[pred.open],
-                            high=[pred.high],
-                            low=[pred.low],
-                            close=[pred.close],
-                            increasing_line_color="#16a34a",
-                            decreasing_line_color="#dc2626",
-                            increasing_fillcolor="rgba(22,163,74,0.5)",
-                            decreasing_fillcolor="rgba(220,38,38,0.5)",
-                            showlegend=False,
-                        )
-                    ]
-                )
-                mini_fig.update_layout(
-                    margin=dict(l=0, r=0, t=10, b=0),
-                    xaxis=dict(visible=False, showgrid=False, zeroline=False),
-                    yaxis=dict(
-                        title="Price",
-                        showgrid=True,
-                        gridcolor="#1f2937",
-                        zeroline=False,
-                    ),
-                    paper_bgcolor="#020617",
-                    plot_bgcolor="#020617",
-                )
-                st.plotly_chart(mini_fig, use_container_width=True, height=220)
 
         with rationale_container:
             st.markdown("---")
@@ -571,12 +552,13 @@ def main():
                 unsafe_allow_html=True,
             )
             col_r1, col_r2 = st.columns(2)
+            compat = "Medium"
             with col_r1:
                 st.markdown(
                     f"""
                     - Price is trading above key moving averages, supporting a bullish bias.
                     - RSI is in bullish territory without major divergence.
-                    - Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{pred.pattern}**.
+                    - Recent candlesticks form a **{prev_pattern}** setup.
                     - Pattern compatibility between previous and next candle is **{compat}**.
                     """,
                 )
@@ -615,7 +597,7 @@ def main():
                     ai_response = ask_ai_trade_assistant(
                         level=key_level,
                         direction=move_type,
-                        timeframe=timeframe,
+                        timeframe=ui_timeframe,
                         message=user_msg,
                     )
 
@@ -631,7 +613,11 @@ def main():
                     accept_multiple_files=False,
                 )
                 if uploaded_img is not None:
-                    st.image(uploaded_img, caption="Attached chart for AI context", use_column_width=True)
+                    st.image(
+                        uploaded_img,
+                        caption="Attached chart for AI context",
+                        use_column_width=True,
+                    )
                     st.caption(
                         "In the real system, this image would be sent to the AI backend "
                         "so it can see your exact drawings."
@@ -640,7 +626,7 @@ def main():
     # ===== LATEST HOT NEWS TAB =====
     with tab_news:
         st.subheader("Latest Hot News (mock)", anchor=False)
-        news_df = get_news_heatmap_data(symbol, timeframe)
+        news_df = get_news_heatmap_data(symbol, ui_timeframe)
         for _, row in news_df.iterrows():
             impact = row["impact"]
             if impact > 0.8:
@@ -709,9 +695,9 @@ def main():
         st.markdown("---")
         st.subheader("Key technical indicators", anchor=False)
 
-        indicator_states = get_indicator_states(symbol, timeframe)
+        indicator_states = get_indicator_states(symbol, ui_timeframe)
         rows = []
-        trend = get_current_trend(symbol, timeframe)
+        trend = get_current_trend(symbol, ui_timeframe)
         for name, state in indicator_states.items():
             if "Bullish" in state and trend == "Uptrend":
                 support = "Supports uptrend"
