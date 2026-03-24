@@ -16,7 +16,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.live.infer_xgb import get_predictions_for_chart
 
-
 # ============ Page config & CSS ============
 
 st.set_page_config(page_title="CryptoPulse AI – BTC/USD", layout="wide")
@@ -36,14 +35,12 @@ blink_css = """
 @keyframes blink-green { 50% { color: #bbf7d0; } }
 @keyframes blink-red { 50% { color: #fecaca; } }
 @keyframes blink-amber { 50% { color: #fef3c7; } }
-
 .blink-green { color:#22c55e; animation: blink-green 1.2s infinite; }
 .blink-red { color:#ef4444; animation: blink-red 1.2s infinite; }
 .blink-amber { color:#f59e0b; animation: blink-amber 1.2s infinite; }
 </style>
 """
 st.markdown(blink_css, unsafe_allow_html=True)
-
 
 # ============ Helper components ============
 
@@ -75,7 +72,6 @@ def render_range_bar(label: str, low: float, high: float, current: float):
     </div>
     """
     st.markdown(bar_html, unsafe_allow_html=True)
-
 
 def render_ta_gauge(title: str, label: str, score: float):
     """Simple horizontal gauge (0–1) with a pointer and a label like Buy / Sell."""
@@ -112,7 +108,6 @@ def render_ta_gauge(title: str, label: str, score: float):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-
 # ---- Candlestick pattern helpers ----
 
 def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p: float) -> str:
@@ -134,7 +129,6 @@ def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p:
         return "Hanging Man"
     return "Standard"
 
-
 # ============ Real prediction helper ============
 
 MODEL_TF_MAP = {
@@ -144,12 +138,10 @@ MODEL_TF_MAP = {
     "1d": "4h",  # 1d chart uses 4h models (4h→4h, 4h→1d)
 }
 
-
 def get_next_candle_prediction(chart_tf: str, horizon_mode: str = "current") -> dict:
     """Get real prediction from XGBoost models for the selected chart TF."""
     preds = get_predictions_for_chart(chart_tf)  # [current_tf, next_tf]
     return preds[0] if horizon_mode == "current" else preds[1]
-
 
 # ============ Real-time range helpers ============
 
@@ -179,7 +171,6 @@ def get_day_and_52w_range() -> tuple[float, float, float, float, float]:
 
     return day_low, day_high, wk_low, wk_high, current
 
-
 def load_last_6_candles(tf: str) -> list[dict]:
     """
     Load last 6 OHLC candles for selected timeframe from processed feature CSV.
@@ -192,14 +183,10 @@ def load_last_6_candles(tf: str) -> list[dict]:
         "1d": "data/processed/btc_1d_features.csv",
     }
     path_str = csv_map.get(tf)
-    if not path_str:
+    if not path_str or not Path(path_str).exists():
         return []
 
-    path = Path(path_str)
-    if not path.exists():
-        return []
-
-    df = pd.read_csv(path)
+    df = pd.read_csv(path_str)
     df["open_time"] = pd.to_datetime(df["open_time"])
     df = df.sort_values("open_time")
     tail = df.tail(6)
@@ -215,7 +202,6 @@ def load_last_6_candles(tf: str) -> list[dict]:
             }
         )
     return candles
-
 
 def build_rationale(pred: dict, indicator_states: dict, prev_pattern: str) -> tuple[str, str]:
     """Build dynamic rationale text from model output + indicators + pattern."""
@@ -251,117 +237,79 @@ def build_rationale(pred: dict, indicator_states: dict, prev_pattern: str) -> tu
 
     return "\n".join(left_lines), "\n".join(right_lines)
 
-
 # ============ Mini prediction chart (Story 6.3) ============
-
 def build_mini_prediction_chart(ui_timeframe: str, pred: dict) -> go.Figure:
     """
     Single synthetic next candle, shaped as a candlestick pattern archetype.
-
-    - Anchored to latest real close from features CSV for the mapped TF.
-    - Scales size from recent volatility / hl_range.
-    - Chooses a pattern archetype (marubozu, trend bar, doji, hammer, etc.)
-      based on direction + confidence (heuristic).
-
     This is a visual explainer, not a literal OHLC forecast.
     """
     chart_tf = MODEL_TF_MAP[ui_timeframe]
+    
+    FEATURE_CSV_BY_TF = {
+        "15m": "data/processed/btc_15m_features.csv",
+        "1h": "data/processed/btc_1h_features.csv",
+        "4h": "data/processed/btc_4h_features.csv",
+        "1d": "data/processed/btc_1d_features.csv",
+    }
     csv_path = FEATURE_CSV_BY_TF.get(chart_tf)
 
-    # -------- 1) Get latest OHLC + volatility proxy --------
-    last_close = 70000.0
-    last_high = 70100.0
-    last_low = 69900.0
-    vol_proxy = 0.002  # fallback 0.2%
+    last_close, last_high, last_low, vol_proxy = 70000.0, 70100.0, 69900.0, 0.002
 
-    if csv_path is not None:
+    if csv_path and Path(csv_path).exists():
         try:
-            df = pd.read_csv(csv_path)
-            if "open_time" in df.columns:
-                df["open_time"] = pd.to_datetime(df["open_time"])
-                df = df.sort_values("open_time")
+            df = pd.read_csv(csv_path).sort_values("open_time")
             if not df.empty:
-                last_close = float(df["close"].iloc[-1])
-                last_high = float(df["high"].iloc[-1])
-                last_low = float(df["low"].iloc[-1])
+                last_row = df.iloc[-1]
+                last_close = float(last_row["close"])
+                last_high = float(last_row["high"])
+                last_low = float(last_row["low"])
                 if "volatility" in df.columns:
-                    vol_proxy = float(df["volatility"].iloc[-1])
-                elif "hl_range" in df.columns:
-                    hl = float(df["hl_range"].iloc[-1])
-                    vol_proxy = max(hl / max(last_close, 1e-6), 0.0005)
+                    vol_proxy = float(last_row["volatility"])
         except Exception:
             pass
 
-    # Use recent range or volatility as base move size
     recent_range = max(last_high - last_low, last_close * 0.001)
-    base_range = max(recent_range, last_close * max(vol_proxy, 0.001))  # ≥0.1%
+    base_range = max(recent_range, last_close * max(vol_proxy, 0.001))
 
     direction = pred.get("direction", "Neutral")
     confidence = float(pred.get("confidence", 0.0))
 
-    # -------- 2) Map (direction, confidence) to pattern archetype --------
-    # pattern_type values: 'bull_marubozu', 'bear_marubozu', 'bull_trend',
-    # 'bear_trend', 'doji', 'dragonfly', 'gravestone', 'hammer',
-    # 'hanging_man', 'shooting_star'
     if direction in ["Bullish", "SideBull"]:
-        if confidence >= 0.60:
-            pattern_type = "bull_marubozu"
-        elif confidence >= 0.45:
-            pattern_type = "bull_trend"
-        else:
-            pattern_type = "dragonfly"  # bullish bias but indecisive
+        if confidence >= 0.60: pattern_type = "bull_marubozu"
+        elif confidence >= 0.45: pattern_type = "bull_trend"
+        else: pattern_type = "dragonfly"
     elif direction in ["Bearish", "SideBear"]:
-        if confidence >= 0.60:
-            pattern_type = "bear_marubozu"
-        elif confidence >= 0.45:
-            pattern_type = "bear_trend"
-        else:
-            pattern_type = "gravestone"  # bearish bias but indecisive
+        if confidence >= 0.60: pattern_type = "bear_marubozu"
+        elif confidence >= 0.45: pattern_type = "bear_trend"
+        else: pattern_type = "gravestone"
     else:
-        # Neutral: alternate between classic doji and hammer/hanging-like
-        if confidence <= 0.30:
-            pattern_type = "doji"
-        else:
-            pattern_type = "hammer"
+        pattern_type = "doji" if confidence <= 0.30 else "hammer"
 
-    # -------- 3) Define pattern geometry as fractions of base_range --------
-    # Each function returns (open, high, low, close) around last_close
     def pattern_bull_marubozu():
         low = last_close - 0.2 * base_range
         high = last_close + 0.8 * base_range
-        o = low + 0.05 * (high - low)
-        c = high - 0.02 * (high - low)
-        return o, high, low, c
+        return low + 0.05 * (high-low), high, low, high - 0.02 * (high-low)
 
     def pattern_bear_marubozu():
         low = last_close - 0.8 * base_range
         high = last_close + 0.2 * base_range
-        o = high - 0.05 * (high - low)
-        c = low + 0.02 * (high - low)
-        return o, high, low, c
+        return high - 0.05 * (high-low), high, low, low + 0.02 * (high-low)
 
     def pattern_bull_trend():
         low = last_close - 0.3 * base_range
         high = last_close + 0.7 * base_range
-        o = low + 0.20 * (high - low)
-        c = low + 0.75 * (high - low)
-        return o, high, low, c
+        return low + 0.20 * (high-low), high, low, low + 0.75 * (high-low)
 
     def pattern_bear_trend():
         low = last_close - 0.7 * base_range
         high = last_close + 0.3 * base_range
-        o = low + 0.80 * (high - low)
-        c = low + 0.25 * (high - low)
-        return o, high, low, c
+        return low + 0.80 * (high-low), high, low, low + 0.25 * (high-low)
 
     def pattern_doji():
         low = last_close - 0.6 * base_range
         high = last_close + 0.6 * base_range
         mid = (low + high) / 2.0
-        body_half = 0.03 * (high - low)
-        o = mid - body_half
-        c = mid + body_half
-        return o, high, low, c
+        return mid - 0.015 * base_range, high, low, mid + 0.015 * base_range
 
     def pattern_dragonfly():
         high = last_close + 0.15 * base_range
@@ -378,180 +326,56 @@ def build_mini_prediction_chart(ui_timeframe: str, pred: dict) -> go.Figure:
     def pattern_hammer():
         high = last_close + 0.2 * base_range
         low = last_close - 0.8 * base_range
-        body_top = low + 0.65 * (high - low)
-        body_bottom = low + 0.55 * (high - low)
-        if direction in ["Bearish", "SideBear"]:
-            # bearish hammer-like (rare, but keep direction)
-            o, c = body_top, body_bottom
-        else:
-            o, c = body_bottom, body_top
-        return o, high, low, c
-
-    def pattern_hanging_man():
-        high = last_close + 0.2 * base_range
-        low = last_close - 0.8 * base_range
-        body_top = low + 0.85 * (high - low)
-        body_bottom = low + 0.75 * (high - low)
-        # usually at top after uptrend => small body at top, long lower wick
-        if direction in ["Bearish", "SideBear"]:
-            o, c = body_top, body_bottom
-        else:
-            o, c = body_bottom, body_top
-        return o, high, low, c
-
-    def pattern_shooting_star():
-        high = last_close + 0.8 * base_range
-        low = last_close - 0.2 * base_range
-        body_top = low + 0.35 * (high - low)
-        body_bottom = low + 0.25 * (high - low)
-        if direction in ["Bearish", "SideBear"]:
-            o, c = body_bottom, body_top  # red at bottom
-        else:
-            o, c = body_top, body_bottom
-        return o, high, low, c
+        body_top = low + 0.65 * (high-low)
+        body_bottom = low + 0.55 * (high-low)
+        return (body_bottom, body_top) if direction not in ["Bearish", "SideBear"] else (body_top, body_bottom), high, low, (body_top if direction not in ["Bearish", "SideBear"] else body_bottom)
 
     pattern_funcs = {
-        "bull_marubozu": pattern_bull_marubozu,
-        "bear_marubozu": pattern_bear_marubozu,
-        "bull_trend": pattern_bull_trend,
-        "bear_trend": pattern_bear_trend,
-        "doji": pattern_doji,
-        "dragonfly": pattern_dragonfly,
-        "gravestone": pattern_gravestone,
-        "hammer": pattern_hammer,
-        "hanging_man": pattern_hanging_man,
-        "shooting_star": pattern_shooting_star,
+        "bull_marubozu": pattern_bull_marubozu, "bear_marubozu": pattern_bear_marubozu,
+        "bull_trend": pattern_bull_trend, "bear_trend": pattern_bear_trend,
+        "doji": pattern_doji, "dragonfly": pattern_dragonfly,
+        "gravestone": pattern_gravestone, "hammer": pattern_hammer
     }
+    
+    o, high, low, c = pattern_funcs.get(pattern_type, pattern_doji)()
 
-    if pattern_type not in pattern_funcs:
-        pattern_type = "doji"
+    if direction in ["Bullish", "SideBull"]: color = "#22c55e"
+    elif direction in ["Bearish", "SideBear"]: color = "#ef4444"
+    else: color = "#9ca3af"
 
-    o, high, low, c = pattern_funcs[pattern_type]()
-
-    # -------- 4) Color by final direction --------
-    if direction in ["Bullish", "SideBull"]:
-        color = "#22c55e"
-    elif direction in ["Bearish", "SideBear"]:
-        color = "#ef4444"
-    else:
-        color = "#9ca3af"
-
-    fig = go.Figure(
-        data=[
-            go.Candlestick(
-                x=[0],
-                open=[o],
-                high=[high],
-                low=[low],
-                close=[c],
-                increasing_line_color=color,
-                decreasing_line_color=color,
-                increasing_fillcolor=color,
-                decreasing_fillcolor=color,
-                showlegend=False,
-            )
-        ]
-    )
-
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=10, b=0),
-        xaxis=dict(visible=False, showgrid=False, zeroline=False),
-        yaxis=dict(
-            title="Price",
-            showgrid=True,
-            gridcolor="#1f2937",
-            zeroline=False,
-        ),
-        paper_bgcolor="#020617",
-        plot_bgcolor="#020617",
-        height=220,
-    )
-
+    fig = go.Figure(data=[go.Candlestick(
+        x=[0], open=[o], high=[high], low=[low], close=[c],
+        increasing_line_color=color, decreasing_line_color=color,
+        increasing_fillcolor=color, decreasing_fillcolor=color,
+        showlegend=False,
+    )])
+    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis=dict(visible=False), yaxis=dict(gridcolor="#1f2937"), paper_bgcolor="#020617", plot_bgcolor="#020617", height=220)
     return fig
-
 
 # ============ Mock backend functions ============
 
-def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
-    now = datetime.utcnow()
-    rows = [
-        {
-            "bucket": "Last 30m",
-            "timestamp": now - timedelta(minutes=10),
-            "headline": "BTC ETF inflows hit new weekly high",
-            "sentiment": "positive",
-            "impact": 0.95,
-        },
-        {
-            "bucket": "Last 2h",
-            "timestamp": now - timedelta(hours=1, minutes=15),
-            "headline": "Major exchange experiences brief outage",
-            "sentiment": "negative",
-            "impact": 0.8,
-        },
-        {
-            "bucket": "Last 6h",
-            "timestamp": now - timedelta(hours=4),
-            "headline": "Whale moves large BTC tranche to exchange",
-            "sentiment": "negative",
-            "impact": 0.65,
-        },
-        {
-            "bucket": "Last 24h",
-            "timestamp": now - timedelta(hours=14),
-            "headline": "On-chain activity rises amid renewed interest",
-            "sentiment": "neutral",
-            "impact": 0.4,
-        },
-        {
-            "bucket": "Older",
-            "timestamp": now - timedelta(days=1, hours=5),
-            "headline": "Macro data comes in line with expectations",
-            "sentiment": "neutral",
-            "impact": 0.2,
-        },
-    ]
-    return pd.DataFrame(rows)
-
-
 def get_indicator_states(symbol: str, timeframe: str):
     return {
-        "RSI": "Bullish (above 55)",
-        "MACD": "Sideways (flat histogram)",
+        "RSI": "Bullish (above 55)", "MACD": "Sideways (flat histogram)",
         "MA50 vs MA200": "Bullish (golden cross)",
         "Bollinger Bands": "High volatility (near upper band)",
         "Volume": "Above recent average",
     }
 
-
 def get_current_trend(symbol: str, timeframe: str) -> str:
     return "Uptrend"
-
 
 def get_mock_prediction_history() -> pd.DataFrame:
     records = []
     today = date.today()
-    days = 180
-    for i in range(days):
-        d = today - timedelta(days=days - 1 - i)
+    for i in range(180):
+        d = today - timedelta(days=179 - i)
         prediction = random.choice(["Bullish", "Bearish"])
         actual = random.choice(["Up", "Down"])
-        correct = (prediction == "Bullish" and actual == "Up") or (
-            prediction == "Bearish" and actual == "Down"
-        )
+        correct = (prediction == "Bullish" and actual == "Up") or (prediction == "Bearish" and actual == "Down")
         pnl = 0.01 if correct else -0.005
-        records.append(
-            {
-                "date": d,
-                "timeframe": "1h",
-                "prediction": prediction,
-                "actual_move": actual,
-                "correct": correct,
-                "pnl_pct": pnl,
-            }
-        )
+        records.append({"date": d, "timeframe": "1h", "prediction": prediction, "actual_move": actual, "correct": correct, "pnl_pct": pnl})
     return pd.DataFrame(records)
-
 
 def ask_ai_trade_assistant(level: float, direction: str, timeframe: str, message: str):
     if level is None:
@@ -565,6 +389,37 @@ def ask_ai_trade_assistant(level: float, direction: str, timeframe: str, message
         "You can tighten or relax these conditions depending on your risk tolerance."
     )
 
+# ============ YOUR NEW NEWS FUNCTIONS (MOCK IMPLEMENTATION) ============
+
+def fetch_categorized_news() -> list[dict]:
+    """MOCK function to simulate fetching categorized news articles."""
+    now = datetime.utcnow()
+    return [
+        {"category": "crypto", "bucket": "Last 30m", "sentiment": "positive", "headline": "BTC ETF inflows hit new weekly high", "impact": 0.95},
+        {"category": "financial", "bucket": "Last 2h", "sentiment": "negative", "headline": "Major exchange experiences brief outage", "impact": 0.8},
+        {"category": "geopolitical", "bucket": "Last 6h", "sentiment": "negative", "headline": "Regulatory uncertainty clouds market sentiment", "impact": 0.65},
+        {"category": "crypto", "bucket": "Last 24h", "sentiment": "neutral", "headline": "On-chain activity rises amid renewed interest", "impact": 0.4},
+        {"category": "financial", "bucket": "Older", "sentiment": "neutral", "headline": "Macro data comes in line with expectations", "impact": 0.2},
+    ]
+
+def render_news_list(articles: list[dict]):
+    """MOCK function to render a list of news articles."""
+    if not articles:
+        st.write("No news in this category at the moment.")
+        return
+
+    for row in articles:
+        impact = row["impact"]
+        if impact > 0.8: bg, border = "#fee2e2", "#ef4444"
+        elif impact > 0.5: bg, border = "#fef3c7", "#f59e0b"
+        else: bg, border = "#dcfce7", "#22c55e"
+        
+        st.markdown(f"""
+            <div style="border-left:4px solid {border}; background-color:{bg}; padding:0.5rem 0.75rem; margin-bottom:0.4rem; border-radius:4px;">
+              <div style="font-size:0.8rem; color:#4b5563;">{row['bucket']} · {row['sentiment'].capitalize()}</div>
+              <div style="font-size:0.95rem; font-weight:500; margin-top:0.05rem; color:#111827;">{row['headline']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
 # ============ TradingView chart embed ============
 
@@ -577,23 +432,12 @@ def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", heigh
       <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
       <script type="text/javascript">
         new TradingView.widget({{
-          "width": "100%",
-          "height": {height},
-          "symbol": "{symbol_tv}",
-          "interval": "{interval}",
-          "timezone": "Etc/UTC",
-          "theme": "light",
-          "style": "1",
-          "locale": "en",
-          "toolbar_bg": "#f1f3f6",
-          "hide_top_toolbar": false,
-          "hide_side_toolbar": false,
-          "allow_symbol_change": false,
-          "withdateranges": true,
-          "details": false,
-          "hotlist": false,
-          "calendar": false,
-          "studies": [],
+          "width": "100%", "height": {height}, "symbol": "{symbol_tv}",
+          "interval": "{interval}", "timezone": "Etc/UTC", "theme": "light",
+          "style": "1", "locale": "en", "toolbar_bg": "#f1f3f6",
+          "hide_top_toolbar": false, "hide_side_toolbar": false,
+          "allow_symbol_change": false, "withdateranges": true, "details": false,
+          "hotlist": false, "calendar": false, "studies": [],
           "container_id": "tradingview_chart"
         }});
       </script>
@@ -602,493 +446,182 @@ def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", heigh
     """
     components.html(html, height=height + 40, scrolling=False)
 
-
 # ============ UI ============
 
 def main():
     # ----- Top bar -----
-    st.markdown(
-        """
-        <div style="display:flex; justify-content:space-between; align-items:flex-start;
-                    padding:0.75rem 0.5rem 0.5rem 0.5rem; border-bottom:1px solid #e5e7eb;">
+    st.markdown("""
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:0.75rem 0.5rem 0.5rem 0.5rem; border-bottom:1px solid #e5e7eb;">
           <div style="display:flex; flex-direction:column;">
-            <div style="font-size:1.3rem; font-weight:600;">
-              Bitcoin <span style="color:#6b7280; font-weight:400;">(BTC/USD)</span>
-            </div>
+            <div style="font-size:1.3rem; font-weight:600;">Bitcoin <span style="color:#6b7280; font-weight:400;">(BTC/USD)</span></div>
             <div style="margin-top:0.4rem; display:flex; align-items:baseline; gap:0.6rem;">
               <span style="font-size:2rem; font-weight:600;">69,936.8</span>
               <span style="color:#16a34a; font-weight:600;">+477.2 (+0.69%)</span>
             </div>
-            <div style="margin-top:0.1rem; color:#6b7280; font-size:0.85rem;">
-              Real-time data · Mock feed
-            </div>
+            <div style="margin-top:0.1rem; color:#6b7280; font-size:0.85rem;">Real-time data · Mock feed</div>
           </div>
-
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.4rem;">
-            <div style="display:flex; gap:0.5rem;">
-              <button style="background-color:#2563eb;color:white;border:none;
-                             padding:0.35rem 0.8rem;border-radius:4px;font-size:0.85rem;">
-                ★ Add to Watchlist
-              </button>
-            </div>
+            <div style="display:flex; gap:0.5rem;"><button style="background-color:#2563eb;color:white;border:none; padding:0.35rem 0.8rem;border-radius:4px;font-size:0.85rem;">★ Add to Watchlist</button></div>
             <div style="display:flex; gap:0.5rem; margin-top:0.25rem;">
-              <button style="background-color:#16a34a;color:white;border:none;
-                             padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">
-                Buy
-              </button>
-              <button style="background-color:#dc2626;color:white;border:none;
-                             padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">
-                Sell
-              </button>
+              <button style="background-color:#16a34a;color:white;border:none; padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">Buy</button>
+              <button style="background-color:#dc2626;color:white;border:none; padding:0.4rem 1.1rem;border-radius:4px;font-weight:600;">Sell</button>
             </div>
           </div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """, unsafe_allow_html=True)
 
     # ----- Controls row + ranges -----
     col_l, col_r = st.columns([3, 1])
     with col_l:
-        c1, c_spacer, c2 = st.columns([1.2, 0.4, 1.2])
+        c1, _, c2 = st.columns([1.2, 0.4, 1.2])
         with c1:
-            st.markdown(
-                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>",
-                unsafe_allow_html=True,
-            )
-            symbol = st.selectbox(
-                "Symbol",
-                ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-                index=0,
-                label_visibility="collapsed",
-                key="symbol_dd",
-            )
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>", unsafe_allow_html=True)
+            symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
         with c2:
-            st.markdown(
-                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
-                unsafe_allow_html=True,
-            )
-            ui_timeframe = st.selectbox(
-                "Timeframe",
-                ["15m", "1h", "4h", "1d"],
-                index=1,
-                label_visibility="collapsed",
-                key="tf_dd",
-            )
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>", unsafe_allow_html=True)
+            ui_timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=1, label_visibility="collapsed", key="tf_dd")
     with col_r:
         st.markdown("<div style='height:1.4rem;'></div>", unsafe_allow_html=True)
         bcol, icol = st.columns([1.0, 0.25])
         with bcol:
             st.button("Refresh", type="primary")
         with icol:
-            st.markdown(
-                """
-                <div style="display:flex; align-items:center; height:100%;">
-                  <span title="Auto-refreshes every 5 minutes"
-                        style="font-size:1.0rem; color:#e5e7eb; cursor:help; margin-left:0.15rem;">
-                    ⓘ
-                  </span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            st.markdown("""<div style="display:flex; align-items:center; height:100%;"><span title="Auto-refreshes every 5 minutes" style="font-size:1.0rem; color:#e5e7eb; cursor:help; margin-left:0.15rem;">ⓘ</span></div>""", unsafe_allow_html=True)
 
-    # Auto-refresh every 5 minutes
     _ = st_autorefresh(interval=5 * 60 * 1000, key="dashboard_refresh")
-
-    # Real ranges
     day_low, day_high, wk_low, wk_high, cur_price = get_day_and_52w_range()
     col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        render_range_bar("Day's Range", day_low, day_high, cur_price)
-    with col_r2:
-        render_range_bar("52 wk Range", wk_low, wk_high, cur_price)
+    with col_r1: render_range_bar("Day's Range", day_low, day_high, cur_price)
+    with col_r2: render_range_bar("52 wk Range", wk_low, wk_high, cur_price)
 
     # ----- Tabs -----
-    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(
-        ["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"]
-    )
+    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"])
 
-    # ===== GENERAL TAB =====
     with tab_general:
         st.subheader("About Bitcoin", anchor=False)
-        st.write(
-            "Bitcoin is the first decentralized cryptocurrency, designed as a peer‑to‑peer "
-            "digital cash system without a central authority. It trades 24/7 on global "
-            "crypto exchanges and is often used both as a speculative asset and a store "
-            "of value narrative. This dashboard focuses on short‑term technical signals "
-            "and research, not financial advice."
-        )
+        st.write("Bitcoin is the first decentralized cryptocurrency... not financial advice.")
         st.caption("Educational overview only – not investment advice.")
-
         st.markdown("---")
         st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
-
-        sentiment = st.radio(
-            label=" ",
-            options=[
-                "Bullish (green)",
-                "Bearish (red)",
-            ],
-            index=None,
-            horizontal=True,
-            key="general_sentiment",
-        )
-
+        sentiment = st.radio(" ", ["Bullish (green)", "Bearish (red)"], index=None, horizontal=True, key="general_sentiment")
         if sentiment:
-            st.markdown(
-                "<span style='font-size:0.9rem; color:#9ca3af;'>"
-                "Cool, let's validate your view with our prediction model on the <b>Chart</b> tab."
-                "</span>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<span style='font-size:0.9rem; color:#9ca3af;'>Cool, let's validate your view with our prediction model on the <b>Chart</b> tab.</span>", unsafe_allow_html=True)
 
-    # ===== CHART TAB =====
     with tab_chart:
-        # --- mock last 6 real candles for pattern analysis (for rationale text only) ---
-        last_6 = []
-        base_price = 70600.0
-        for _ in range(6):
-            o = base_price + random.uniform(-150, 150)
-            c = o + random.uniform(-120, 120)
-            high = max(o, c) + random.uniform(10, 80)
-            low = min(o, c) - random.uniform(10, 80)
-            last_6.append({"open": o, "high": high, "low": low, "close": c})
-            base_price = c
+        last_6 = load_last_6_candles(ui_timeframe)
+        prev_pattern = "Standard"
+        if len(last_6) > 1:
+            prev_pattern = classify_candle_pattern(last_6[-2]["open"], last_6[-2]["high"], last_6[-2]["low"], last_6[-2]["close"])
 
-        prev_patterns = []
-        for row in last_6[:-1]:
-            patt = classify_candle_pattern(row["open"], row["high"], row["low"], row["close"])
-            prev_patterns.append(patt)
-        prev_pattern = prev_patterns[-1] if prev_patterns else "Standard"
-
-        chart_container = st.container()
-        rationale_container = st.container()
-        ai_container = st.container()
+        chart_container, rationale_container, ai_container = st.container(), st.container(), st.container()
 
         with chart_container:
             left, right = st.columns([3, 1])
-
             with left:
-                st.markdown(
-                    "<div style='font-size:1.1rem; font-weight:600;'>"
-                    "● <span style='color:#22c55e;'>Live</span>"
-                    "<span style='margin-left:0.35rem;'>BTC</span>"
-                    "<span style='font-size:0.9rem; color:#6b7280;'> (BTC/USDT)</span>"
-                    "</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown("<div style='font-size:1.1rem; font-weight:600;'>● <span style='color:#22c55e;'>Live</span><span style='margin-left:0.35rem;'>BTC</span><span style='font-size:0.9rem; color:#6b7280;'> (BTC/USDT)</span></div>", unsafe_allow_html=True)
                 interval_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
-                interval = interval_map.get(ui_timeframe, "60")
-                render_tradingview_chart(symbol.replace("USDT", "USD"), interval=interval)
-
+                render_tradingview_chart(symbol, interval=interval_map.get(ui_timeframe, "60"))
             with right:
-                st.markdown(
-                    f"<div style='font-size:1.1rem; font-weight:600;'>"
-                    f"Next {ui_timeframe} prediction</div>",
-                    unsafe_allow_html=True,
-                )
-
-                # Horizon toggle
-                pred_mode_label = st.radio(
-                    "Horizon",
-                    ["Current TF", "Next TF"],
-                    horizontal=True,
-                    key=f"pred_mode_{ui_timeframe}",
-                )
+                st.markdown(f"<div style='font-size:1.1rem; font-weight:600;'>Next {ui_timeframe} prediction</div>", unsafe_allow_html=True)
+                pred_mode_label = st.radio("Horizon", ["Current TF", "Next TF"], horizontal=True, key=f"pred_mode_{ui_timeframe}")
                 horizon_mode = "current" if pred_mode_label == "Current TF" else "next"
-
-                chart_tf = ui_timeframe
-                if chart_tf not in {"15m", "1h", "4h"}:
-                    st.write("Model not trained for this timeframe yet.")
-                    pred = {}
-                else:
-                    pred = get_next_candle_prediction(chart_tf, horizon_mode=horizon_mode)
-
+                pred = get_next_candle_prediction(ui_timeframe, horizon_mode=horizon_mode) if ui_timeframe in {"15m", "1h", "4h"} else {}
+                
+                if pred:
                     direction = pred.get("direction", "Neutral")
-                    if direction in ["Bullish", "SideBull"]:
-                        dir_class = "blink-green"
-                    elif direction in ["Bearish", "SideBear"]:
-                        dir_class = "blink-red"
-                    else:
-                        dir_class = "blink-amber"
-
-                    confidence = float(pred.get("confidence", 0.0))
-                    asof = pred.get("as_of", "n/a")
-                    tf_in = pred.get("timeframe", chart_tf)
-                    tf_out = pred.get("horizon", chart_tf)
-
-                    st.markdown(
-                        f"""
+                    dir_class = "blink-green" if direction in ["Bullish", "SideBull"] else "blink-red" if direction in ["Bearish", "SideBear"] else "blink-amber"
+                    st.markdown(f"""
                         <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:0.4rem;">
-                          <div>
-                            <div style="font-size:0.85rem; color:#9ca3af;">Direction</div>
-                            <div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">
-                              {direction}
-                            </div>
-                          </div>
-                          <div style="text-align:right;">
-                            <div style="font-size:0.85rem; color:#9ca3af;">Confidence</div>
-                            <div style="font-size:1.4rem; font-weight:600;">
-                              {confidence:.1%}
-                            </div>
-                          </div>
+                          <div><div style="font-size:0.85rem; color:#9ca3af;">Direction</div><div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">{direction}</div></div>
+                          <div style="text-align:right;"><div style="font-size:0.85rem; color:#9ca3af;">Confidence</div><div style="font-size:1.4rem; font-weight:600;">{pred.get("confidence", 0.0):.1%}</div></div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    st.markdown(
-                        f"""
-                        <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">
-                          Model input: <b>{asof}</b> · {tf_in} → {tf_out}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                # Mini prediction chart (Story 6.3)
-                mini_fig = build_mini_prediction_chart(ui_timeframe, pred)
-                st.plotly_chart(mini_fig, use_container_width=True)
+                        <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">Model input: <b>{pred.get("as_of", "n/a")}</b> · {pred.get("timeframe", ui_timeframe)} → {pred.get("horizon", ui_timeframe)}</div>
+                        """, unsafe_allow_html=True)
+                else:
+                    st.write("Model not trained for this timeframe yet.")
+                
+                st.plotly_chart(build_mini_prediction_chart(ui_timeframe, pred), use_container_width=True)
 
         with rationale_container:
             st.markdown("---")
-            st.markdown(
-                "<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>",
-                unsafe_allow_html=True,
-            )
-            col_r1, col_r2 = st.columns(2)
-            indicator_states = get_indicator_states(symbol, ui_timeframe)
-            left_text, right_text = build_rationale(pred, indicator_states, prev_pattern)
-            with col_r1:
-                st.markdown(left_text)
-            with col_r2:
-                st.markdown(right_text)
+            st.markdown("<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>", unsafe_allow_html=True)
+            left, right = st.columns(2)
+            left_text, right_text = build_rationale(pred, get_indicator_states(symbol, ui_timeframe), prev_pattern)
+            left.markdown(left_text)
+            right.markdown(right_text)
 
         with ai_container:
             st.markdown("---")
             st.markdown("### AI trade assistant (mock backend)", unsafe_allow_html=True)
-
-            col_left, col_right = st.columns([2, 1])
-            with col_left:
-                st.write(
-                    "Describe your scenario, e.g. "
-                    "`If we get a breakdown of 68,000 on 1h, what should RSI/MACD/volume look like?`"
-                )
-                key_level = st.number_input(
-                    "Key level (trendline / support / resistance)", value=68000.0, step=100.0
-                )
-                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"], index=0)
-                user_msg = st.text_area(
-                    "Your question to the AI",
-                    value="If we get a breakdown of this level, what should indicators look like to justify a short?",
-                    height=100,
-                )
-                ask_btn = st.button("Ask AI about this scenario")
-
-                ai_response = None
-                if ask_btn:
-                    ai_response = ask_ai_trade_assistant(
-                        level=key_level,
-                        direction=move_type,
-                        timeframe=ui_timeframe,
-                        message=user_msg,
-                    )
-
-                if ai_response:
+            left, right = st.columns([2, 1])
+            with left:
+                st.write("Describe your scenario...")
+                key_level = st.number_input("Key level", value=68000.0, step=100.0)
+                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"])
+                user_msg = st.text_area("Your question to the AI", "If we get a breakdown...")
+                if st.button("Ask AI about this scenario"):
+                    ai_response = ask_ai_trade_assistant(key_level, move_type, ui_timeframe, user_msg)
                     st.markdown("**AI response (mock):**")
                     st.write(ai_response)
+            with right:
+                if uploaded_img := st.file_uploader("Attach current chart screenshot", type=["png", "jpg"]):
+                    st.image(uploaded_img, caption="Attached chart for AI context")
+                    st.caption("This image would be sent to the AI backend.")
 
-            with col_right:
-                st.write("Attach current chart screenshot (optional)")
-                uploaded_img = st.file_uploader(
-                    "Paste/upload chart image (PNG/JPG)",
-                    type=["png", "jpg", "jpeg"],
-                    accept_multiple_files=False,
-                )
-                if uploaded_img is not None:
-                    st.image(
-                        uploaded_img,
-                        caption="Attached chart for AI context",
-                        use_column_width=True,
-                    )
-                    st.caption(
-                        "In the real system, this image would be sent to the AI backend "
-                        "so it can see your exact drawings."
-                    )
-
-    # ===== LATEST HOT NEWS TAB =====
     with tab_news:
         st.subheader("Latest Hot News (mock)", anchor=False)
-        news_df = get_news_heatmap_data(symbol, ui_timeframe)
-        for _, row in news_df.iterrows():
-            impact = row["impact"]
-            if impact > 0.8:
-                bg = "#fee2e2"
-                border = "#ef4444"
-            elif impact > 0.5:
-                bg = "#fef3c7"
-                border = "#f59e0b"
-            else:
-                bg = "#dcfce7"
-                border = "#22c55e"
-            st.markdown(
-                f"""
-                <div style="border-left:4px solid {border};
-                            background-color:{bg};
-                            padding:0.5rem 0.75rem;
-                            margin-bottom:0.4rem;
-                            border-radius:4px;">
-                  <div style="font-size:0.8rem; color:#4b5563;">
-                    {row['bucket']} · {row['sentiment'].capitalize()}
-                  </div>
-                  <div style="font-size:0.95rem; font-weight:500; margin-top:0.05rem; color:#111827;">
-                    {row['headline']}
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        st.caption("Red = hot / recent, amber = medium, green = older or lower impact (mock data).")
+        tab_crypto, tab_finance, tab_geo = st.tabs(["Crypto", "Financials", "Geopolitics"])
+        articles = fetch_categorized_news()
+        with tab_crypto:
+            render_news_list([a for a in articles if a["category"] == "crypto"])
+        with tab_finance:
+            render_news_list([a for a in articles if a["category"] == "financial"])
+        with tab_geo:
+            render_news_list([a for a in articles if a["category"] == "geopolitical"])
+        st.caption("Red = hot/recent, amber = medium, green = older/lower impact.")
 
-    # ===== TECHNICAL ANALYSIS TAB =====
     with tab_tech:
         st.subheader("Technical Analysis", anchor=False)
-        ta_tf = st.radio(
-            "Timeframe",
-            options=["15m", "1H", "4H", "1D"],
-            horizontal=True,
-            index=1,
-            key="tech_ta_tf",
-        )
-        if ta_tf == "15m":
-            ti_label, ti_score = "Buy", 0.65
-            ma_label, ma_score = "Strong Buy", 0.80
-            sum_label, sum_score = "Buy", 0.70
-        elif ta_tf == "1H":
-            ti_label, ti_score = "Buy", 0.60
-            ma_label, ma_score = "Buy", 0.65
-            sum_label, sum_score = "Buy", 0.62
-        elif ta_tf == "4H":
-            ti_label, ti_score = "Neutral", 0.50
-            ma_label, ma_score = "Neutral", 0.50
-            sum_label, sum_score = "Neutral", 0.50
-        else:
-            ti_label, ti_score = "Sell", 0.35
-            ma_label, ma_score = "Sell", 0.30
-            sum_label, sum_score = "Sell", 0.32
+        ta_tf = st.radio("Timeframe", ["15m", "1H", "4H", "1D"], horizontal=True, index=1, key="tech_ta_tf")
+        
+        if ta_tf == "15m": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Buy", 0.65, "Strong Buy", 0.80, "Buy", 0.70
+        elif ta_tf == "1H": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Buy", 0.60, "Buy", 0.65, "Buy", 0.62
+        elif ta_tf == "4H": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Neutral", 0.50, "Neutral", 0.50, "Neutral", 0.50
+        else: ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Sell", 0.35, "Sell", 0.30, "Sell", 0.32
 
         c_ti, c_sum, c_ma = st.columns(3)
-        with c_ti:
-            render_ta_gauge("Technical Indicators", ti_label, ti_score)
-        with c_sum:
-            render_ta_gauge("Summary", sum_label, sum_score)
-        with c_ma:
-            render_ta_gauge("Moving Averages", ma_label, ma_score)
+        with c_ti: render_ta_gauge("Technical Indicators", ti_label, ti_score)
+        with c_sum: render_ta_gauge("Summary", sum_label, sum_score)
+        with c_ma: render_ta_gauge("Moving Averages", ma_label, ma_score)
 
         st.markdown("---")
         st.subheader("Key technical indicators", anchor=False)
-
         indicator_states = get_indicator_states(symbol, ui_timeframe)
-        rows = []
-        trend = get_current_trend(symbol, ui_timeframe)
-        for name, state in indicator_states.items():
-            if "Bullish" in state and trend == "Uptrend":
-                support = "Supports uptrend"
-            elif "Bearish" in state and trend == "Downtrend":
-                support = "Supports downtrend"
-            else:
-                support = "Neutral / mixed"
-            rows.append(
-                {
-                    "Indicator": name,
-                    "Status": state,
-                    "Trend support": support,
-                }
-            )
-        tech_df = pd.DataFrame(rows)
-        st.dataframe(tech_df, use_container_width=True)
-        st.caption(
-            "Mock values for now – this view will later be driven by real indicator "
-            "calculations for the selected symbol and timeframe."
-        )
+        rows = [{"Indicator": name, "Status": state, "Trend support": "Supports uptrend" if "Bullish" in state else "Supports downtrend" if "Bearish" in state else "Neutral / mixed"} for name, state in indicator_states.items()]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True)
+        st.caption("Mock values for now...")
 
-    # ===== HISTORICAL ANALYSIS TAB =====
     with tab_history:
         st.subheader("Historical analysis (mock)", anchor=False)
-
         st.markdown("### Previous model predictions – hit/miss (mock)", unsafe_allow_html=True)
         hist_df = get_mock_prediction_history()
-        lookback_label = st.selectbox(
-            "Lookback window",
-            ["1 month", "3 months", "6 months"],
-            index=2,
-            key="hist_lookback_window",
-        )
-        days_map_hist = {"1 month": 30, "3 months": 90, "6 months": 180}
-        days_hist = days_map_hist[lookback_label]
-        cutoff = date.today() - timedelta(days=days_hist)
-        filt = hist_df[hist_df["date"] >= cutoff]
-
+        lookback_label = st.selectbox("Lookback window", ["1 month", "3 months", "6 months"], index=2)
+        days_hist = {"1 month": 30, "3 months": 90, "6 months": 180}[lookback_label]
+        filt = hist_df[hist_df["date"] >= (date.today() - timedelta(days=days_hist))]
         if not filt.empty:
-            accuracy = filt["correct"].mean()
-            total_trades = len(filt)
-            correct_trades = int(filt["correct"].sum())
-            st.write(
-                f"- Total trades (mock): **{total_trades}**, "
-                f"correct: **{correct_trades}**, "
-                f"accuracy: **{accuracy*100:.1f}%**."
-            )
-            st.dataframe(
-                filt.sort_values("date", ascending=False)[
-                    ["date", "timeframe", "prediction", "actual_move", "correct", "pnl_pct"]
-                ],
-                use_container_width=True,
-                height=220,
-            )
-        else:
-            st.write("No mock prediction data in this window yet.")
-
+            st.write(f"- Total trades: **{len(filt)}**, correct: **{int(filt['correct'].sum())}**, accuracy: **{filt['correct'].mean():.1%}**.")
+            st.dataframe(filt.sort_values("date", ascending=False), use_container_width=True, height=220)
+        
         st.markdown("---")
         st.markdown("### Hypothetical returns calculator (mock)", unsafe_allow_html=True)
-
         col_cap, col_lb = st.columns(2)
-        with col_cap:
-            initial_capital = st.number_input(
-                "Starting capital (€)",
-                min_value=1000.0,
-                value=10000.0,
-                step=500.0,
-                key="hist_initial_capital",
-            )
-        with col_lb:
-            rb_label = st.selectbox(
-                "Backtest window",
-                ["1 month", "3 months", "6 months"],
-                index=1,
-                key="hist_backtest_window",
-            )
-
-        days_map_rb = {"1 month": 30, "3 months": 90, "6 months": 180}
-        rb_days = days_map_rb[rb_label]
-        rb_cutoff = date.today() - timedelta(days=rb_days)
-        rb_hist = hist_df[hist_df["date"] >= rb_cutoff]
-
+        initial_capital = col_cap.number_input("Starting capital (€)", min_value=1000.0, value=10000.0, step=500.0)
+        rb_label = col_lb.selectbox("Backtest window", ["1 month", "3 months", "6 months"], index=1)
+        rb_days = {"1 month": 30, "3 months": 90, "6 months": 180}[rb_label]
+        rb_hist = hist_df[hist_df["date"] >= (date.today() - timedelta(days=rb_days))]
         if not rb_hist.empty:
-            final_capital = initial_capital
-            for pct in rb_hist["pnl_pct"]:
-                final_capital *= (1 + pct)
-            total_return = (final_capital / initial_capital) - 1.0
-
-            st.write(
-                f"If you had traded all mock signals over **{rb_label}** "
-                f"with an initial capital of **€{initial_capital:,.0f}**, "
-                f"your capital would be **€{final_capital:,.0f}** "
-                f"(**{total_return*100:.1f}%** return)."
-            )
-        else:
-            st.write("Not enough mock history to compute returns in this window.")
-
+            final_capital = initial_capital * (1 + rb_hist["pnl_pct"]).prod()
+            st.write(f"A starting capital of **€{initial_capital:,.0f}** would now be **€{final_capital:,.0f}** (**{(final_capital/initial_capital - 1):.1%}** return).")
 
 if __name__ == "__main__":
     main()
