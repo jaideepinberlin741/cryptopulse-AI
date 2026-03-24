@@ -1,12 +1,20 @@
 import random
 from datetime import datetime, timedelta, date
+from pathlib import Path
+import sys
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
-from live.infer_xgb import get_predictions_for_chart, FEATURE_CSV_BY_TF
+
+# Ensure project root is on sys.path so `src` package is importable
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.live.infer_xgb import get_predictions_for_chart
 
 
 # ============ Page config & CSS ============
@@ -127,17 +135,6 @@ def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p:
     return "Standard"
 
 
-def compatibility_score(prev_pattern: str, next_pattern: str) -> str:
-    """Mock compatibility between previous candle pattern and next predicted candle."""
-    bullish_continuation = {"Marubozu", "Standard"}
-    bearish_reversal = {"Hanging Man", "Doji"}
-    if prev_pattern in bullish_continuation and next_pattern in bullish_continuation:
-        return "High"
-    if prev_pattern in bearish_reversal and next_pattern in bullish_continuation:
-        return "Low"
-    return "Medium"
-
-
 # ============ Real prediction helper ============
 
 MODEL_TF_MAP = {
@@ -148,21 +145,111 @@ MODEL_TF_MAP = {
 }
 
 
-def get_next_candle_prediction(ui_timeframe: str, horizon_mode: str = "current") -> dict:
-    """
-    Use get_predictions_for_chart(chart_tf) with UI timeframe mapping.
+def get_next_candle_prediction(chart_tf: str, horizon_mode: str = "current") -> dict:
+    """Get real prediction from XGBoost models for the selected chart TF."""
+    preds = get_predictions_for_chart(chart_tf)  # [current_tf, next_tf]
+    return preds[0] if horizon_mode == "current" else preds[1]
 
-    ui_timeframe: 15m, 1h, 4h, 1d (what user selects)
-    chart_tf    : 15m, 1h, 4h (what models support)
-    horizon_mode: 'current' -> first config (tf→tf), 'next' -> second (tf→next_tf)
+
+# ============ Real-time range helpers ============
+
+def get_day_and_52w_range() -> tuple[float, float, float, float, float]:
     """
-    if ui_timeframe not in MODEL_TF_MAP:
-        raise ValueError(f"Unsupported UI timeframe: {ui_timeframe}")
-    chart_tf = MODEL_TF_MAP[ui_timeframe]
-    predictions = get_predictions_for_chart(chart_tf)
-    if not isinstance(predictions, (list, tuple)) or len(predictions) < 2:
-        raise ValueError("get_predictions_for_chart must return at least two prediction dicts.")
-    return predictions[0] if horizon_mode == "current" else predictions[1]
+    Compute day's low/high and 52w low/high from 1d features CSV.
+    Returns: (day_low, day_high, wk_low, wk_high, current_close)
+    """
+    path = Path("data/processed/btc_1d_features.csv")
+    if not path.exists():
+        # Fallback demo numbers if file missing
+        return 69493.2, 71347.1, 60187.0, 126186.0, 70456.0
+
+    df = pd.read_csv(path)
+    df["open_time"] = pd.to_datetime(df["open_time"])
+    df = df.sort_values("open_time")
+
+    last = df.iloc[-1]
+    day_low = float(last["low"])
+    day_high = float(last["high"])
+    current = float(last["close"])
+
+    cutoff = df["open_time"].max() - pd.Timedelta(days=365)
+    df_52 = df[df["open_time"] >= cutoff]
+    wk_low = float(df_52["low"].min())
+    wk_high = float(df_52["high"].max())
+
+    return day_low, day_high, wk_low, wk_high, current
+
+
+def load_last_6_candles(tf: str) -> list[dict]:
+    """
+    Load last 6 OHLC candles for selected timeframe from processed feature CSV.
+    Used for rationale pattern analysis.
+    """
+    csv_map = {
+        "15m": "data/processed/btc_15m_features.csv",
+        "1h": "data/processed/btc_1h_features.csv",
+        "4h": "data/processed/btc_4h_features.csv",
+        "1d": "data/processed/btc_1d_features.csv",
+    }
+    path_str = csv_map.get(tf)
+    if not path_str:
+        return []
+
+    path = Path(path_str)
+    if not path.exists():
+        return []
+
+    df = pd.read_csv(path)
+    df["open_time"] = pd.to_datetime(df["open_time"])
+    df = df.sort_values("open_time")
+    tail = df.tail(6)
+
+    candles = []
+    for _, row in tail.iterrows():
+        candles.append(
+            {
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+    return candles
+
+
+def build_rationale(pred: dict, indicator_states: dict, prev_pattern: str) -> tuple[str, str]:
+    """Build dynamic rationale text from model output + indicators + pattern."""
+    direction = pred.get("direction", "Neutral")
+    conf = float(pred.get("confidence", 0.0))
+    if conf < 0.55:
+        conf_label = "low"
+    elif conf < 0.7:
+        conf_label = "moderate"
+    else:
+        conf_label = "high"
+
+    rsi_state = indicator_states.get("RSI", "")
+    macd_state = indicator_states.get("MACD", "")
+    bb_state = indicator_states.get("Bollinger Bands", "")
+    vol_state = indicator_states.get("Volume", "")
+
+    left_lines = []
+    right_lines = []
+
+    left_lines.append(f"- Model bias is **{direction}** with {conf_label} confidence.")
+    if "Bullish" in rsi_state:
+        left_lines.append("- RSI is in bullish territory, supporting upside.")
+    elif "Bearish" in rsi_state:
+        left_lines.append("- RSI is in bearish territory, limiting upside.")
+    else:
+        left_lines.append("- RSI is in neutral territory, not strongly directional.")
+
+    left_lines.append(f"- Recent candlesticks form a **{prev_pattern}**-type setup.")
+    right_lines.append(f"- MACD: {macd_state}.")
+    right_lines.append(f"- Volumes: {vol_state}.")
+    right_lines.append(f"- Volatility / bands: {bb_state}.")
+
+    return "\n".join(left_lines), "\n".join(right_lines)
 
 
 # ============ Mini prediction chart (Story 6.3) ============
@@ -609,11 +696,13 @@ def main():
     # Auto-refresh every 5 minutes
     _ = st_autorefresh(interval=5 * 60 * 1000, key="dashboard_refresh")
 
+    # Real ranges
+    day_low, day_high, wk_low, wk_high, cur_price = get_day_and_52w_range()
     col_r1, col_r2 = st.columns(2)
     with col_r1:
-        render_range_bar("Day's Range", 69493.2, 71347.1, 70456.0)
+        render_range_bar("Day's Range", day_low, day_high, cur_price)
     with col_r2:
-        render_range_bar("52 wk Range", 60187.0, 126186.0, 70456.0)
+        render_range_bar("52 wk Range", wk_low, wk_high, cur_price)
 
     # ----- Tabs -----
     tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(
@@ -671,7 +760,6 @@ def main():
         for row in last_6[:-1]:
             patt = classify_candle_pattern(row["open"], row["high"], row["low"], row["close"])
             prev_patterns.append(patt)
-
         prev_pattern = prev_patterns[-1] if prev_patterns else "Standard"
 
         chart_container = st.container()
@@ -710,50 +798,54 @@ def main():
                 )
                 horizon_mode = "current" if pred_mode_label == "Current TF" else "next"
 
-                # Real model prediction
-                pred = get_next_candle_prediction(ui_timeframe, horizon_mode=horizon_mode)
-
-                direction = pred.get("direction", "Neutral")
-                if direction in ["Bullish", "SideBull"]:
-                    dir_class = "blink-green"
-                elif direction in ["Bearish", "SideBear"]:
-                    dir_class = "blink-red"
+                chart_tf = ui_timeframe
+                if chart_tf not in {"15m", "1h", "4h"}:
+                    st.write("Model not trained for this timeframe yet.")
+                    pred = {}
                 else:
-                    dir_class = "blink-amber"
+                    pred = get_next_candle_prediction(chart_tf, horizon_mode=horizon_mode)
 
-                confidence = float(pred.get("confidence", 0.0))
-                asof = pred.get("as_of", "n/a")
-                tf_in = pred.get("timeframe", MODEL_TF_MAP.get(ui_timeframe, ui_timeframe))
-                tf_out = pred.get("horizon", ui_timeframe)
+                    direction = pred.get("direction", "Neutral")
+                    if direction in ["Bullish", "SideBull"]:
+                        dir_class = "blink-green"
+                    elif direction in ["Bearish", "SideBear"]:
+                        dir_class = "blink-red"
+                    else:
+                        dir_class = "blink-amber"
 
-                st.markdown(
-                    f"""
-                    <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:0.4rem;">
-                      <div>
-                        <div style="font-size:0.85rem; color:#9ca3af;">Direction</div>
-                        <div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">
-                          {direction}
+                    confidence = float(pred.get("confidence", 0.0))
+                    asof = pred.get("as_of", "n/a")
+                    tf_in = pred.get("timeframe", chart_tf)
+                    tf_out = pred.get("horizon", chart_tf)
+
+                    st.markdown(
+                        f"""
+                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:0.4rem;">
+                          <div>
+                            <div style="font-size:0.85rem; color:#9ca3af;">Direction</div>
+                            <div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">
+                              {direction}
+                            </div>
+                          </div>
+                          <div style="text-align:right;">
+                            <div style="font-size:0.85rem; color:#9ca3af;">Confidence</div>
+                            <div style="font-size:1.4rem; font-weight:600;">
+                              {confidence:.1%}
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                      <div style="text-align:right;">
-                        <div style="font-size:0.85rem; color:#9ca3af;">Confidence</div>
-                        <div style="font-size:1.4rem; font-weight:600;">
-                          {confidence:.1%}
-                        </div>
-                      </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
-                st.markdown(
-                    f"""
-                    <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">
-                      Model input: <b>{asof}</b> · {tf_in} → {tf_out}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    st.markdown(
+                        f"""
+                        <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">
+                          Model input: <b>{asof}</b> · {tf_in} → {tf_out}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
 
                 # Mini prediction chart (Story 6.3)
                 mini_fig = build_mini_prediction_chart(ui_timeframe, pred)
@@ -766,24 +858,12 @@ def main():
                 unsafe_allow_html=True,
             )
             col_r1, col_r2 = st.columns(2)
-            compat = "Medium"
+            indicator_states = get_indicator_states(symbol, ui_timeframe)
+            left_text, right_text = build_rationale(pred, indicator_states, prev_pattern)
             with col_r1:
-                st.markdown(
-                    f"""
-                    - Price is trading above key moving averages, supporting a bullish bias.
-                    - RSI is in bullish territory without major divergence.
-                    - Recent candlesticks form a **{prev_pattern}** setup.
-                    - Pattern compatibility between previous and next candle is **{compat}**.
-                    """,
-                )
+                st.markdown(left_text)
             with col_r2:
-                st.markdown(
-                    """
-                    - Recent candles show higher lows, consistent with an uptrend.
-                    - No major negative headlines in the latest news heatmap buckets.
-                    - Volumes are near or above recent averages.
-                    """,
-                )
+                st.markdown(right_text)
 
         with ai_container:
             st.markdown("---")

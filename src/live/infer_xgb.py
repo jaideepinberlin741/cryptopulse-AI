@@ -24,9 +24,11 @@ import pandas as pd
 
 from xgboost import XGBClassifier, XGBRegressor
 
-from models.train_utils import TrainingConfig, get_model_paths
-from features.label_pipeline import ensure_datetime_index
+from src.models.train_utils import TrainingConfig, get_model_paths
+from src.features.label_pipeline import ensure_datetime_index
 
+BASE_DIR = Path(__file__).resolve().parents[2]
+sys.path.append(str(BASE_DIR))
 
 # Must match LABEL_MAP / CLASS_NAMES in xgboost_model.py
 IDX_TO_CLASS = {
@@ -47,7 +49,7 @@ FEATURE_COLS = [
     "volume_ratio", "price_position",
 ]
 
-# Where your features live per timeframe
+# Where your features live per timeframe (closed-bar)
 FEATURE_CSV_BY_TF = {
     "15m": "data/processed/btc_15m_features.csv",
     "1h":  "data/processed/btc_1h_features.csv",
@@ -55,19 +57,50 @@ FEATURE_CSV_BY_TF = {
     "1d":  "data/processed/btc_1d_features.csv",
 }
 
+# Live-features overrides
+LIVE_FEATURE_CSV_BY_TF = {
+    "15m": "data/processed/btc_15m_live_features.csv",
+    "1h":  "data/processed/btc_1h_live_features.csv",
+    "4h":  "data/processed/btc_4h_live_features.csv",
+}
+
+
+def _get_features_path(tf: str, live: bool = False) -> str:
+    """
+    Return the path to the features CSV for a timeframe.
+
+    If live=True and a live-features file exists for that TF,
+    prefer that; otherwise fall back to the standard features CSV.
+    """
+    if live:
+        live_path = LIVE_FEATURE_CSV_BY_TF.get(tf)
+        if live_path is not None and Path(live_path).exists():
+            return live_path
+
+    path = FEATURE_CSV_BY_TF.get(tf)
+    if path is None:
+        raise ValueError(f"No features CSV configured for timeframe {tf}")
+    return path
 
 def load_latest_window(tf: str, window_size: int = 48) -> Tuple[np.ndarray, pd.Timestamp]:
-    """Load the most recent sliding window from the features CSV for a timeframe."""
-    csv_path = FEATURE_CSV_BY_TF.get(tf)
-    if csv_path is None:
-        raise ValueError(f"No features CSV configured for timeframe {tf}")
+    """
+    Load the most recent sliding window from the features CSV for a timeframe.
+
+    For 15m, 1h, 4h this will use the live-features file if available so that the
+    last row reflects the current, partially formed higher-TF candle.
+    """
+    use_live = tf in {"15m", "1h", "4h"}
+    csv_path = _get_features_path(tf, live=use_live)
 
     df = pd.read_csv(csv_path)
     df = ensure_datetime_index(df, timestamp_col="open_time")
     df = df.sort_index(ascending=True)
 
     if len(df) < window_size:
-        raise ValueError(f"Not enough rows ({len(df)}) for one window of size {window_size}.")
+        raise ValueError(
+            f"Not enough rows ({len(df)}) for one window of size {window_size} "
+            f"from {csv_path}."
+        )
 
     latest = df.iloc[-window_size:]
     X_win = latest[FEATURE_COLS].values.astype(np.float32)
