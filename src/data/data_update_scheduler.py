@@ -9,7 +9,10 @@ import os
 from datetime import datetime
 import traceback
 import time
-from src.features.process_pipeline_all_tf import engineer_features_all_timeframes
+from src.features.process_pipeline_all_tf import (
+    engineer_features_all_timeframes,
+    engineer_live_features_all,
+)
 
 # Logging setup
 
@@ -37,7 +40,7 @@ logger.info(f"RAW_DIR={RAW_DIR}")
 logger.info(f"PROCESSED_DIR={PROCESSED_DIR}")
 
 client = Client()
-TIMEFRAMES = ['15m', '1h', '4h', '1d']
+TIMEFRAMES = ['5m', '15m', '1h', '4h', '1d']
 
 def update_timeframe(tf, max_retries=3):
     csv_path = os.path.join(RAW_DIR, f"btc_{tf}_raw.csv")
@@ -108,10 +111,18 @@ def job_listener(event):
         logger.debug(f"✅ Job '{job.name}' completed")
 
 def update_frequent_tfs():
-    for tf in ['15m', '1h', '4h']:
+    frequent_tfs = ["5m", "15m", "1h", "4h"]
+    for tf in frequent_tfs:
         update_timeframe(tf)
+
     engineer_features_all_timeframes(
-        timeframes=['15m', '1h', '4h'],
+        timeframes=["15m", "1h", "4h", "1d"],
+        raw_dir=RAW_DIR,
+        processed_dir=PROCESSED_DIR,
+    )
+
+    # NEW: live 15m/1h/4h features
+    engineer_live_features_all(
         raw_dir=RAW_DIR,
         processed_dir=PROCESSED_DIR,
     )
@@ -124,7 +135,7 @@ scheduler.add_job(update_all, 'cron', hour=3, id='daily_full', name='Daily Full'
 scheduler.add_job(
     update_frequent_tfs,
     'interval',
-    minutes=10,
+    minutes=5,
     id='frequent_tfs',
     name='Frequent TFs (raw + features)'
 )
@@ -133,7 +144,7 @@ scheduler.start()
 logger.info("""
 🚀 Multi-TF Scheduler Active:
 ├── Daily 3AM: All TFs
-└── Every 10min: 15m,1h,4h (live trading)
+└── Every 5min: 5m,15m,1h,4h (live trading)
 Logs: ../../logs/scheduler.log
 Press Ctrl+C to stop
 """)
