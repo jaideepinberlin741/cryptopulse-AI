@@ -7,8 +7,43 @@ import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from live.infer_xgb import get_predictions_for_chart
+from components.news_panel import render_news_panel
+from components.news_pipeline.fetch_news import fetch_categorized_news
 
+def render_news_list(items):
+    if not items:
+        st.info("No news available right now.")
+        return
 
+    for row in items:
+        impact = row["impact"]
+        if impact > 0.8:
+            bg = "#fee2e2"
+            border = "#ef4444"
+        elif impact > 0.5:
+            bg = "#fef3c7"
+            border = "#f59e0b"
+        else:
+            bg = "#dcfce7"
+            border = "#22c55e"
+
+        st.markdown(
+            f"""
+            <div style="border-left:4px solid {border};
+                        background-color:{bg};
+                        padding:0.5rem 0.75rem;
+                        margin-bottom:0.4rem;
+                        border-radius:4px;">
+              <div style="font-size:0.8rem; color:#4b5563;">
+                {row['bucket']} · {row['sentiment'].capitalize()}
+              </div>
+              <div style="font-size:0.95rem; font-weight:500; margin-top:0.05rem; color:#111827;">
+                {row['title']}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 # ============ Page config & CSS ============
 
 st.set_page_config(page_title="CryptoPulse AI – BTC/USD", layout="wide")
@@ -166,7 +201,6 @@ def get_next_candle_prediction(ui_timeframe: str, horizon_mode: str = "current")
 
 
 # ============ Mock backend functions ============
-
 def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
     now = datetime.utcnow()
     rows = [
@@ -207,7 +241,6 @@ def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
         },
     ]
     return pd.DataFrame(rows)
-
 
 def get_indicator_states(symbol: str, timeframe: str):
     return {
@@ -494,7 +527,7 @@ def main():
 
                 # Real model prediction
                 pred = get_next_candle_prediction(ui_timeframe, horizon_mode=horizon_mode)
-
+                # pred = None
                 direction = pred.get("direction", "Neutral")
                 if direction in ["Bullish", "SideBull"]:
                     dir_class = "blink-green"
@@ -625,37 +658,24 @@ def main():
 
     # ===== LATEST HOT NEWS TAB =====
     with tab_news:
-        st.subheader("Latest Hot News (mock)", anchor=False)
-        news_df = get_news_heatmap_data(symbol, ui_timeframe)
-        for _, row in news_df.iterrows():
-            impact = row["impact"]
-            if impact > 0.8:
-                bg = "#fee2e2"
-                border = "#ef4444"
-            elif impact > 0.5:
-                bg = "#fef3c7"
-                border = "#f59e0b"
-            else:
-                bg = "#dcfce7"
-                border = "#22c55e"
-            st.markdown(
-                f"""
-                <div style="border-left:4px solid {border};
-                            background-color:{bg};
-                            padding:0.5rem 0.75rem;
-                            margin-bottom:0.4rem;
-                            border-radius:4px;">
-                  <div style="font-size:0.8rem; color:#4b5563;">
-                    {row['bucket']} · {row['sentiment'].capitalize()}
-                  </div>
-                  <div style="font-size:0.95rem; font-weight:500; margin-top:0.05rem; color:#111827;">
-                    {row['headline']}
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        st.caption("Red = hot / recent, amber = medium, green = older or lower impact (mock data).")
+        tab_crypto, tab_finance, tab_geo = st.tabs(["Crypto", "Financials", "Geopolitics"])
+
+        articles = fetch_categorized_news()
+
+        crypto_df = [a for a in articles if a["category"] == "crypto"]
+        finance_df = [a for a in articles if a["category"] == "financial"]
+        geo_df = [a for a in articles if a["category"] == "geopolitical"]
+
+        with tab_crypto:
+            render_news_list(crypto_df)
+
+        with tab_finance:
+            render_news_list(finance_df)
+
+        with tab_geo:
+            render_news_list(geo_df)
+
+        st.caption("Red = hot / recent, amber = medium, green = older or lower impact.")
 
     # ===== TECHNICAL ANALYSIS TAB =====
     with tab_tech:
