@@ -91,7 +91,7 @@ def render_ta_gauge(title: str, label: str, score: float):
         pill_fg = "#4b5563"
 
     html = f"""
-    <div style="text-align:center; margin:0.5rem 0 1.0rem 0;">
+    <div style="text-align:center; margin:0.5rem 0 1.0rem 0%;">
       <div style="font-size:0.95rem; font-weight:600; margin-bottom:0.4rem;">
         {title}
       </div>
@@ -250,6 +250,224 @@ def build_rationale(pred: dict, indicator_states: dict, prev_pattern: str) -> tu
     right_lines.append(f"- Volatility / bands: {bb_state}.")
 
     return "\n".join(left_lines), "\n".join(right_lines)
+
+
+# ============ Mini prediction chart (Story 6.3) ============
+
+def build_mini_prediction_chart(ui_timeframe: str, pred: dict) -> go.Figure:
+    """
+    Single synthetic next candle, shaped as a candlestick pattern archetype.
+
+    - Anchored to latest real close from features CSV for the mapped TF.
+    - Scales size from recent volatility / hl_range.
+    - Chooses a pattern archetype (marubozu, trend bar, doji, hammer, etc.)
+      based on direction + confidence (heuristic).
+
+    This is a visual explainer, not a literal OHLC forecast.
+    """
+    chart_tf = MODEL_TF_MAP[ui_timeframe]
+    csv_path = FEATURE_CSV_BY_TF.get(chart_tf)
+
+    # -------- 1) Get latest OHLC + volatility proxy --------
+    last_close = 70000.0
+    last_high = 70100.0
+    last_low = 69900.0
+    vol_proxy = 0.002  # fallback 0.2%
+
+    if csv_path is not None:
+        try:
+            df = pd.read_csv(csv_path)
+            if "open_time" in df.columns:
+                df["open_time"] = pd.to_datetime(df["open_time"])
+                df = df.sort_values("open_time")
+            if not df.empty:
+                last_close = float(df["close"].iloc[-1])
+                last_high = float(df["high"].iloc[-1])
+                last_low = float(df["low"].iloc[-1])
+                if "volatility" in df.columns:
+                    vol_proxy = float(df["volatility"].iloc[-1])
+                elif "hl_range" in df.columns:
+                    hl = float(df["hl_range"].iloc[-1])
+                    vol_proxy = max(hl / max(last_close, 1e-6), 0.0005)
+        except Exception:
+            pass
+
+    # Use recent range or volatility as base move size
+    recent_range = max(last_high - last_low, last_close * 0.001)
+    base_range = max(recent_range, last_close * max(vol_proxy, 0.001))  # ≥0.1%
+
+    direction = pred.get("direction", "Neutral")
+    confidence = float(pred.get("confidence", 0.0))
+
+    # -------- 2) Map (direction, confidence) to pattern archetype --------
+    # pattern_type values: 'bull_marubozu', 'bear_marubozu', 'bull_trend',
+    # 'bear_trend', 'doji', 'dragonfly', 'gravestone', 'hammer',
+    # 'hanging_man', 'shooting_star'
+    if direction in ["Bullish", "SideBull"]:
+        if confidence >= 0.60:
+            pattern_type = "bull_marubozu"
+        elif confidence >= 0.45:
+            pattern_type = "bull_trend"
+        else:
+            pattern_type = "dragonfly"  # bullish bias but indecisive
+    elif direction in ["Bearish", "SideBear"]:
+        if confidence >= 0.60:
+            pattern_type = "bear_marubozu"
+        elif confidence >= 0.45:
+            pattern_type = "bear_trend"
+        else:
+            pattern_type = "gravestone"  # bearish bias but indecisive
+    else:
+        # Neutral: alternate between classic doji and hammer/hanging-like
+        if confidence <= 0.30:
+            pattern_type = "doji"
+        else:
+            pattern_type = "hammer"
+
+    # -------- 3) Define pattern geometry as fractions of base_range --------
+    # Each function returns (open, high, low, close) around last_close
+    def pattern_bull_marubozu():
+        low = last_close - 0.2 * base_range
+        high = last_close + 0.8 * base_range
+        o = low + 0.05 * (high - low)
+        c = high - 0.02 * (high - low)
+        return o, high, low, c
+
+    def pattern_bear_marubozu():
+        low = last_close - 0.8 * base_range
+        high = last_close + 0.2 * base_range
+        o = high - 0.05 * (high - low)
+        c = low + 0.02 * (high - low)
+        return o, high, low, c
+
+    def pattern_bull_trend():
+        low = last_close - 0.3 * base_range
+        high = last_close + 0.7 * base_range
+        o = low + 0.20 * (high - low)
+        c = low + 0.75 * (high - low)
+        return o, high, low, c
+
+    def pattern_bear_trend():
+        low = last_close - 0.7 * base_range
+        high = last_close + 0.3 * base_range
+        o = low + 0.80 * (high - low)
+        c = low + 0.25 * (high - low)
+        return o, high, low, c
+
+    def pattern_doji():
+        low = last_close - 0.6 * base_range
+        high = last_close + 0.6 * base_range
+        mid = (low + high) / 2.0
+        body_half = 0.03 * (high - low)
+        o = mid - body_half
+        c = mid + body_half
+        return o, high, low, c
+
+    def pattern_dragonfly():
+        high = last_close + 0.15 * base_range
+        low = last_close - 0.85 * base_range
+        o = c = high - 0.05 * (high - low)
+        return o, high, low, c
+
+    def pattern_gravestone():
+        high = last_close + 0.85 * base_range
+        low = last_close - 0.15 * base_range
+        o = c = low + 0.05 * (high - low)
+        return o, high, low, c
+
+    def pattern_hammer():
+        high = last_close + 0.2 * base_range
+        low = last_close - 0.8 * base_range
+        body_top = low + 0.65 * (high - low)
+        body_bottom = low + 0.55 * (high - low)
+        if direction in ["Bearish", "SideBear"]:
+            # bearish hammer-like (rare, but keep direction)
+            o, c = body_top, body_bottom
+        else:
+            o, c = body_bottom, body_top
+        return o, high, low, c
+
+    def pattern_hanging_man():
+        high = last_close + 0.2 * base_range
+        low = last_close - 0.8 * base_range
+        body_top = low + 0.85 * (high - low)
+        body_bottom = low + 0.75 * (high - low)
+        # usually at top after uptrend => small body at top, long lower wick
+        if direction in ["Bearish", "SideBear"]:
+            o, c = body_top, body_bottom
+        else:
+            o, c = body_bottom, body_top
+        return o, high, low, c
+
+    def pattern_shooting_star():
+        high = last_close + 0.8 * base_range
+        low = last_close - 0.2 * base_range
+        body_top = low + 0.35 * (high - low)
+        body_bottom = low + 0.25 * (high - low)
+        if direction in ["Bearish", "SideBear"]:
+            o, c = body_bottom, body_top  # red at bottom
+        else:
+            o, c = body_top, body_bottom
+        return o, high, low, c
+
+    pattern_funcs = {
+        "bull_marubozu": pattern_bull_marubozu,
+        "bear_marubozu": pattern_bear_marubozu,
+        "bull_trend": pattern_bull_trend,
+        "bear_trend": pattern_bear_trend,
+        "doji": pattern_doji,
+        "dragonfly": pattern_dragonfly,
+        "gravestone": pattern_gravestone,
+        "hammer": pattern_hammer,
+        "hanging_man": pattern_hanging_man,
+        "shooting_star": pattern_shooting_star,
+    }
+
+    if pattern_type not in pattern_funcs:
+        pattern_type = "doji"
+
+    o, high, low, c = pattern_funcs[pattern_type]()
+
+    # -------- 4) Color by final direction --------
+    if direction in ["Bullish", "SideBull"]:
+        color = "#22c55e"
+    elif direction in ["Bearish", "SideBear"]:
+        color = "#ef4444"
+    else:
+        color = "#9ca3af"
+
+    fig = go.Figure(
+        data=[
+            go.Candlestick(
+                x=[0],
+                open=[o],
+                high=[high],
+                low=[low],
+                close=[c],
+                increasing_line_color=color,
+                decreasing_line_color=color,
+                increasing_fillcolor=color,
+                decreasing_fillcolor=color,
+                showlegend=False,
+            )
+        ]
+    )
+
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis=dict(
+            title="Price",
+            showgrid=True,
+            gridcolor="#1f2937",
+            zeroline=False,
+        ),
+        paper_bgcolor="#020617",
+        plot_bgcolor="#020617",
+        height=220,
+    )
+
+    return fig
 
 
 # ============ Mock backend functions ============
@@ -527,8 +745,17 @@ def main():
 
     # ===== CHART TAB =====
     with tab_chart:
-        # Real last 6 candles for rationale pattern analysis
-        last_6 = load_last_6_candles(ui_timeframe)
+        # --- mock last 6 real candles for pattern analysis (for rationale text only) ---
+        last_6 = []
+        base_price = 70600.0
+        for _ in range(6):
+            o = base_price + random.uniform(-150, 150)
+            c = o + random.uniform(-120, 120)
+            high = max(o, c) + random.uniform(10, 80)
+            low = min(o, c) - random.uniform(10, 80)
+            last_6.append({"open": o, "high": high, "low": low, "close": c})
+            base_price = c
+
         prev_patterns = []
         for row in last_6[:-1]:
             patt = classify_candle_pattern(row["open"], row["high"], row["low"], row["close"])
@@ -620,12 +847,9 @@ def main():
                         unsafe_allow_html=True,
                     )
 
-                    st.markdown(
-                        "<div style='font-size:0.80rem; color:#6b7280; margin-top:0.75rem;'>"
-                        "Mini prediction chart (5 candles + forecast) will appear here in the next step."
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
+                # Mini prediction chart (Story 6.3)
+                mini_fig = build_mini_prediction_chart(ui_timeframe, pred)
+                st.plotly_chart(mini_fig, use_container_width=True)
 
         with rationale_container:
             st.markdown("---")
