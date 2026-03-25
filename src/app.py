@@ -8,6 +8,8 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
+from components.news_panel import render_news_panel
+from collections import defaultdict
 
 # Ensure project root is on sys.path so `src` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -391,16 +393,29 @@ def ask_ai_trade_assistant(level: float, direction: str, timeframe: str, message
 
 # ============ YOUR NEW NEWS FUNCTIONS (MOCK IMPLEMENTATION) ============
 
-def fetch_categorized_news() -> list[dict]:
+def fetch_categorized_news(symbol: str) -> dict:
     """MOCK function to simulate fetching categorized news articles."""
     now = datetime.utcnow()
-    return [
+
+    raw_items = [
         {"category": "crypto", "bucket": "Last 30m", "sentiment": "positive", "headline": "BTC ETF inflows hit new weekly high", "impact": 0.95},
         {"category": "financial", "bucket": "Last 2h", "sentiment": "negative", "headline": "Major exchange experiences brief outage", "impact": 0.8},
         {"category": "geopolitical", "bucket": "Last 6h", "sentiment": "negative", "headline": "Regulatory uncertainty clouds market sentiment", "impact": 0.65},
         {"category": "crypto", "bucket": "Last 24h", "sentiment": "neutral", "headline": "On-chain activity rises amid renewed interest", "impact": 0.4},
         {"category": "financial", "bucket": "Older", "sentiment": "neutral", "headline": "Macro data comes in line with expectations", "impact": 0.2},
     ]
+
+    grouped = defaultdict(list)
+    for item in raw_items:
+        grouped[item["category"]].append(item)
+
+    return dict(grouped)
+
+    grouped = defaultdict(list)
+    for item in raw_items:
+        grouped[item["category"]].append(item)
+
+    return dict(grouped)
 
 def render_news_list(articles: list[dict]):
     """MOCK function to render a list of news articles."""
@@ -569,16 +584,9 @@ def main():
                     st.caption("This image would be sent to the AI backend.")
 
     with tab_news:
-        st.subheader("Latest Hot News (mock)", anchor=False)
-        tab_crypto, tab_finance, tab_geo = st.tabs(["Crypto", "Financials", "Geopolitics"])
-        articles = fetch_categorized_news()
-        with tab_crypto:
-            render_news_list([a for a in articles if a["category"] == "crypto"])
-        with tab_finance:
-            render_news_list([a for a in articles if a["category"] == "financial"])
-        with tab_geo:
-            render_news_list([a for a in articles if a["category"] == "geopolitical"])
-        st.caption("Red = hot/recent, amber = medium, green = older/lower impact.")
+        categorized_news = fetch_categorized_news(symbol)
+        render_news_panel(categorized_news)
+
 
     with tab_tech:
         st.subheader("Technical Analysis", anchor=False)

@@ -10,13 +10,16 @@ load_dotenv()
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 BASE_URL = "https://newsapi.org/v2"
 
+def fetch_categorized_news(symbol: str):
+    """
+    Returns categorized news for a given symbol.
+    For now this uses mock data.
+    """
+    from .mock_data import MOCK_NEWS
 
-def fetch_categorized_news():
-    """
-    Fetches news from newsapi.org and categorizes it into 'financial',
-    'geopolitical', and 'crypto'. Falls back to legacy heatmap mock if API key
-    is missing or API returns no results.
-    """
+    # Als je symbol nog niet gebruikt, is dit prima:
+    return MOCK_NEWS
+
 
     # 1. Fallback if API key crashes
     if not NEWS_API_KEY:
