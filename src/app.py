@@ -355,6 +355,46 @@ def build_mini_prediction_chart(ui_timeframe: str, pred: dict) -> go.Figure:
     return fig
 
 # ============ Mock backend functions ============
+def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
+    now = datetime.utcnow()
+    rows = [
+        {
+            "bucket": "Last 30m",
+            "timestamp": now - timedelta(minutes=10),
+            "headline": "BTC ETF inflows hit new weekly high",
+            "sentiment": "positive",
+            "impact": 0.95,
+        },
+        {
+            "bucket": "Last 2h",
+            "timestamp": now - timedelta(hours=1, minutes=15),
+            "headline": "Major exchange experiences brief outage",
+            "sentiment": "negative",
+            "impact": 0.8,
+        },
+        {
+            "bucket": "Last 6h",
+            "timestamp": now - timedelta(hours=4),
+            "headline": "Whale moves large BTC tranche to exchange",
+            "sentiment": "negative",
+            "impact": 0.65,
+        },
+        {
+            "bucket": "Last 24h",
+            "timestamp": now - timedelta(hours=14),
+            "headline": "On-chain activity rises amid renewed interest",
+            "sentiment": "neutral",
+            "impact": 0.4,
+        },
+        {
+            "bucket": "Older",
+            "timestamp": now - timedelta(days=1, hours=5),
+            "headline": "Macro data comes in line with expectations",
+            "sentiment": "neutral",
+            "impact": 0.2,
+        },
+    ]
+    return pd.DataFrame(rows)
 
 def get_indicator_states(symbol: str, timeframe: str):
     return {
@@ -404,12 +444,6 @@ def fetch_categorized_news(symbol: str) -> dict:
         {"category": "crypto", "bucket": "Last 24h", "sentiment": "neutral", "headline": "On-chain activity rises amid renewed interest", "impact": 0.4},
         {"category": "financial", "bucket": "Older", "sentiment": "neutral", "headline": "Macro data comes in line with expectations", "impact": 0.2},
     ]
-
-    grouped = defaultdict(list)
-    for item in raw_items:
-        grouped[item["category"]].append(item)
-
-    return dict(grouped)
 
     grouped = defaultdict(list)
     for item in raw_items:
@@ -586,7 +620,6 @@ def main():
     with tab_news:
         categorized_news = fetch_categorized_news(symbol)
         render_news_panel(categorized_news)
-
 
     with tab_tech:
         st.subheader("Technical Analysis", anchor=False)

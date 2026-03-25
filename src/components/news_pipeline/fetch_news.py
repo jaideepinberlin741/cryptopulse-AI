@@ -17,7 +17,6 @@ def fetch_categorized_news(symbol: str):
     """
     from .mock_data import MOCK_NEWS
 
-    # Als je symbol nog niet gebruikt, is dit prima:
     return MOCK_NEWS
 
 
