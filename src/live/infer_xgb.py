@@ -8,15 +8,17 @@ Live next-candle prediction for CryptoPulse AI (XGBoost).
     - XGBoost regressor    (xgb_reg)      [optional]
     - XGBoost large-move   (xgb_large)    [optional]
 - Uses latest 48x21 window from the corresponding features CSV.
-- Prints: direction class, class probabilities, predicted return, and
-  probability of a large move.
+- **NEW**: Adds HH/HL/LH/LL trend structure analysis from last 48 candles.
+- Prints: direction class, class probabilities, predicted return,
+  probability of a large move, and structure label/strength.
 """
 
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List, Dict
 
 import joblib
 import numpy as np
@@ -26,6 +28,7 @@ from xgboost import XGBClassifier, XGBRegressor
 
 from src.models.train_utils import TrainingConfig, get_model_paths
 from src.features.label_pipeline import ensure_datetime_index
+from src.live.trend_direction import detect_trend_structure 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 sys.path.append(str(BASE_DIR))
@@ -71,7 +74,6 @@ LIVE_FEATURE_CSV_BY_TF = {
     "4h":  "data/processed/btc_4h_live_features.csv",
 }
 
-
 def _get_features_path(tf: str, live: bool = False) -> str:
     """
     Return the path to the features CSV for a timeframe.
@@ -88,6 +90,25 @@ def _get_features_path(tf: str, live: bool = False) -> str:
     if path is None:
         raise ValueError(f"No features CSV configured for timeframe {tf}")
     return path
+
+def get_last_n_candles(tf: str, n: int = 48) -> List[Dict]:
+    """
+    Load last N raw OHLC candles for TF from features CSV (matches model input).
+    """
+    use_live = tf in {"15m", "1h", "4h"}
+    csv_path = _get_features_path(tf, live=use_live)
+    df = pd.read_csv(csv_path)
+    df = ensure_datetime_index(df, timestamp_col="open_time")
+    df = df.sort_index(ascending=True).tail(n)
+    return [
+        {
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
+        for _, row in df.iterrows()
+    ]
 
 def load_latest_window(tf: str, window_size: int = 48) -> Tuple[np.ndarray, pd.Timestamp]:
     """
@@ -115,11 +136,9 @@ def load_latest_window(tf: str, window_size: int = 48) -> Tuple[np.ndarray, pd.T
 
     return X_win.reshape(1, window_size, len(FEATURE_COLS)), end_ts
 
-
 def flatten_features(X: np.ndarray) -> np.ndarray:
     """(batch, window, features) -> (batch, window*features)."""
     return X.reshape(X.shape[0], -1)
-
 
 def load_models(config: TrainingConfig) -> Tuple[XGBClassifier, XGBRegressor | None, XGBClassifier | None]:
     """
@@ -149,7 +168,7 @@ def load_models(config: TrainingConfig) -> Tuple[XGBClassifier, XGBRegressor | N
 def predict_for_config(timeframe: str, horizon: str) -> dict:
     """
     Core prediction function used by CLI and backend.
-    Returns a unified dict with direction, confidence, and optional extras.
+    Returns a unified dict with direction, confidence, structure analysis, and optional extras.
     """
     cfg = TrainingConfig(timeframe=timeframe, horizon=horizon)
 
@@ -174,6 +193,10 @@ def predict_for_config(timeframe: str, horizon: str) -> dict:
     if large is not None:
         prob_large = float(large.predict_proba(X_flat)[0, 1])
 
+    # **NEW: Trend Structure**
+    candles = get_last_n_candles(timeframe)
+    structure_result = detect_trend_structure(candles, model_direction=class_name)
+
     result = {
         "timeframe": timeframe,
         "horizon": horizon,
@@ -186,6 +209,7 @@ def predict_for_config(timeframe: str, horizon: str) -> dict:
         },
         "predicted_return": pred_return,
         "prob_large_move": prob_large,
+        "structure": structure_result.to_dict(),  # NEW: Full structure analysis
     }
     return result
 
@@ -202,6 +226,11 @@ def infer_once(timeframe: str, horizon: str) -> None:
     print("Class probabilities :")
     for cname, p in result["probs"].items():
         print(f"  {cname:8s}: {p:.3f}")
+
+    struct = result["structure"]
+    print(f"\n**Trend Structure**  : {struct['label']} (strength={struct['strength']:.3f})")
+    print(f"   HH/HL: {struct['hh_count']}/{struct['hl_count']} | LH/LL: {struct['lh_count']}/{struct['ll_count']}")
+    print(f"   Combined dir      : {struct['combined_direction']}")
 
     if result["predicted_return"] is not None:
         r = result["predicted_return"]

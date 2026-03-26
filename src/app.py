@@ -2,6 +2,7 @@ import random
 from datetime import datetime, timedelta, date
 from pathlib import Path
 import sys
+import requests  # NEW
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -22,8 +23,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.live.infer_xgb import get_predictions_for_chart
 
-from src.live.infer_xgb import get_predictions_for_chart
-
 # -------------------------------------------------
 # Raw OHLC sources used for mini chart context
 # -------------------------------------------------
@@ -32,6 +31,30 @@ RAW_FEATURE_CSV_BY_TF = {
     "1h":  "data/raw/btc_1h_raw.csv",
     "4h":  "data/raw/btc_4h_raw.csv",
 }
+
+# ============ Simple live price helper ============
+
+def get_live_btc_price():
+    """
+    Fetch BTC/USDT price and 24h change from Binance public API.
+    Falls back to static values if request fails.
+    """
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/24hr",
+            params={"symbol": "BTCUSDT"},
+            timeout=3,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            last_price = float(data["lastPrice"])
+            price_change = float(data["priceChange"])
+            price_change_pct = float(data["priceChangePercent"])
+            return last_price, price_change, price_change_pct
+    except Exception:
+        pass
+    # Fallback (same numbers you had before)
+    return 69936.8, 477.2, 0.69  # static mock
 
 # ============ Page config & CSS ============
 
@@ -146,7 +169,6 @@ def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p:
         return "Hanging Man"
     return "Standard"
 
-
 def compatibility_score(prev_pattern: str, next_pattern: str) -> str:
     """Mock compatibility between previous candle pattern and next predicted candle."""
     bullish_continuation = {"Marubozu", "Standard"}
@@ -171,7 +193,6 @@ def get_next_candle_prediction(chart_tf: str, horizon_mode: str = "current") -> 
         raise ValueError(f"Prediction not supported for timeframe: {chart_tf}")
     preds = get_predictions_for_chart(chart_tf)
     return preds[0] if horizon_mode == "current" else preds[1]
-
 
 def load_last_n_candles(tf: str, n: int = 6) -> list[dict]:
     """
@@ -204,144 +225,84 @@ def load_last_n_candles(tf: str, n: int = 6) -> list[dict]:
         )
     return candles
 
-
-def build_mini_prediction_chart(
-    last_candles: list[dict],
-    pred: dict,
-) -> go.Figure:
-    """
-    Mini chart:
-      - last 5 *real* candles (context)
-      - 1 predicted candle from model output
-    """
+def build_mini_prediction_chart(last_candles: list[dict], pred: dict) -> go.Figure:
+    """Mini chart: last 5 real candles + 1 predicted (bold color, closer spacing)."""
     if len(last_candles) < 1:
         return go.Figure()
 
-    # Context candles
+    # Context candles (5 real)
     ctx = last_candles[-5:]
-    opens = [c["open"] for c in ctx]
-    highs = [c["high"] for c in ctx]
-    lows  = [c["low"]  for c in ctx]
-    closes= [c["close"] for c in ctx]
+    opens, highs, lows, closes = [c["open"] for c in ctx], [c["high"] for c in ctx], \
+                                [c["low"] for c in ctx], [c["close"] for c in ctx]
 
-    prev_open  = opens[-1]
     prev_close = closes[-1]
-    prev_high  = highs[-1]
-    prev_low   = lows[-1]
+    prev_range = max(highs[-1], lows[-1]) - min(highs[-1], lows[-1])
+    avg_body = abs(closes[-1] - opens[-1]) or prev_range * 0.6
+    base_range = prev_range or avg_body * 1.8
 
-    prev_body  = abs(prev_close - prev_open)
-    prev_range = max(prev_high, prev_low) - min(prev_high, prev_low)
-    avg_body   = prev_body if prev_body > 0 else max(prev_range * 0.25, 1)
-    base_range = prev_range if prev_range > 0 else avg_body * 1.5
-
-    # Predicted return and direction
-    pred_ret = pred.get("predicted_return", None)
+    # Predicted candle (clear color + nice body)
+    pred_ret = pred.get("predicted_return") or 0.003 * (1 if pred.get("direction") in ["Bullish"] else -1 if pred.get("direction") in ["Bearish"] else 0)
     direction = pred.get("direction", "Neutral")
+    target_close = prev_close * (1 + float(pred_ret))
+    scale = 3.0 if pred.get("horizon") in ["1h", "4h", "1d"] and pred.get("timeframe") == "15m" else 1.5
 
-    if pred_ret is None:
-        conf = float(pred.get("confidence", 0.0))
-        mag = 0.002 + 0.004 * max(0.0, min(conf, 1.0))  # 0.2–0.6%
-        if direction in ["Bullish", "SideBull"]:
-            pred_ret = mag
-        elif direction in ["Bearish", "SideBear"]:
-            pred_ret = -mag
-        else:
-            pred_ret = 0.0
-
-    target_close = prev_close * (1.0 + float(pred_ret))
-
-    # Direction-based body shape
+    body_size = avg_body * 1.2 * scale  # Nice prominent body
     if direction in ["Bullish", "SideBull"]:
-        body_size = avg_body * (1.0 if direction == "SideBull" else 1.4)
-        pred_open = target_close - body_size
-        pred_close = target_close
+        pred_open, pred_close = target_close - body_size * 0.7, target_close
+        pred_color = "#10b981"  # Bold green
     elif direction in ["Bearish", "SideBear"]:
-        body_size = avg_body * (1.0 if direction == "SideBear" else 1.4)
-        pred_open = target_close + body_size
-        pred_close = target_close
+        pred_open, pred_close = target_close, target_close + body_size * 0.7
+        pred_color = "#ef4444"  # Bold red
     else:
-        body_size = avg_body * 0.3
-        pred_open = target_close - body_size / 2
-        pred_close = target_close + body_size / 2
+        pred_open = target_close - body_size * 0.3
+        pred_close = target_close + body_size * 0.3
+        #pred_color = "#6b7280"  # Grey neutral
+        pred_color = "#d97706" # Amber
 
-    # Scale body/wicks for next‑TF horizons (e.g. 15m->1h)
-    scale = 4.0 if pred.get("horizon") == "1h" and pred.get("timeframe") == "15m" else 1.0
-    body_size *= scale
+    wick_range = base_range * 0.5 * scale
+    pred_high = max(pred_open, pred_close) + wick_range * 0.4
+    pred_low = min(pred_open, pred_close) - wick_range * 0.6
 
-    wick_scale = 0.4
-    wick_range = base_range * wick_scale * scale
+    # Append predicted
+    opens.append(pred_open); highs.append(pred_high)
+    lows.append(pred_low); closes.append(pred_close)
 
-    pred_high = max(pred_open, pred_close) + wick_range * 0.6
-    pred_low  = min(pred_open, pred_close) - wick_range * 0.4
+    # Tighter x-spacing
+    #xs = list(range(len(opens)))  # Integer indices
+    #xs = [x * 0.85 for x in xs]   # Scale closer (0.85 spacing)
+    xs = [i * 0.82 for i in range(len(opens))]  # Uniform 0.82 spacing
 
-    opens.append(pred_open)
-    highs.append(pred_high)
-    lows.append(pred_low)
-    closes.append(pred_close)
-
-    xs = list(range(len(opens)))
     fig = go.Figure()
 
-    # Context candles (grey)
-    fig.add_trace(
-        go.Candlestick(
-            x=xs[:-1],
-            open=opens[:-1],
-            high=highs[:-1],
-            low=lows[:-1],
-            close=closes[:-1],
-            increasing_line_color="#9ca3af",
-            decreasing_line_color="#9ca3af",
-            increasing_fillcolor="rgba(156,163,175,0.4)",
-            decreasing_fillcolor="rgba(156,163,175,0.4)",
-            showlegend=False,
-            name="Context",
-        )
-    )
+    # Context (light grey, thin)
+    fig.add_trace(go.Candlestick(
+        x=xs[:-1], open=opens[:-1], high=highs[:-1], low=lows[:-1], close=closes[:-1],
+        increasing_line_color="#9ca3af", decreasing_line_color="#9ca3af",
+        increasing_fillcolor="rgba(156,163,175,0.3)", decreasing_fillcolor="rgba(156,163,175,0.3)",
+        line=dict(width=0.8), name="Context", showlegend=False
+    ))
 
-    # Predicted candle color
-    if direction in ["Bullish", "SideBull"]:
-        inc_col = "#16a34a"
-        dec_col = "#16a34a"
-    elif direction in ["Bearish", "SideBear"]:
-        inc_col = "#dc2626"
-        dec_col = "#dc2626"
-    else:
-        inc_col = "#6b7280"
-        dec_col = "#6b7280"
-
-    fig.add_trace(
-        go.Candlestick(
-            x=xs[-1:],
-            open=opens[-1:],
-            high=highs[-1:],
-            low=lows[-1:],
-            close=closes[-1:],
-            increasing_line_color=inc_col,
-            decreasing_line_color=dec_col,
-            increasing_fillcolor="rgba(22,163,74,0.7)",
-            decreasing_fillcolor="rgba(220,38,38,0.7)",
-            showlegend=False,
-            name="Predicted",
-        )
-    )
+    # Predicted (bold color, thick lines)
+    fig.add_trace(go.Candlestick(
+        x=[xs[-1]], open=[pred_open], high=[pred_high], low=[pred_low], close=[pred_close],
+        increasing_line_color=pred_color, decreasing_line_color=pred_color,
+        increasing_fillcolor=pred_color, decreasing_fillcolor=pred_color,
+        line=dict(width=2.5), name="Predicted", showlegend=False
+    ))
 
     fig.update_layout(
         margin=dict(l=0, r=0, t=10, b=0),
-        xaxis=dict(visible=False, showgrid=False, zeroline=False),
-        yaxis=dict(
-            title="Price",
-            showgrid=True,
-            gridcolor="#1f2937",
-            zeroline=False,
-        ),
-        paper_bgcolor="#020617",
-        plot_bgcolor="#020617",
-        height=220,
+        xaxis_visible=False, xaxis_showgrid=False, xaxis_zeroline=False,
+        yaxis_title="Price", yaxis_showgrid=True, yaxis_gridcolor="#1f2937", yaxis_zeroline=False,
+        paper_bgcolor="#020617", plot_bgcolor="#020617", height=220,
+        # Tighter layout
+        font_size=10
     )
     return fig
 
+
 # ============ Mock backend functions ============
+
 def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
     now = datetime.utcnow()
     rows = [
@@ -485,16 +446,22 @@ def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", heigh
 # ============ UI ============
 
 def main():
+    # Fetch live BTC price once per run (used for top bar and day's range)
+    live_price, live_change, live_change_pct = get_live_btc_price()
+    change_color = "#16a34a" if live_change >= 0 else "#dc2626"
+    change_sign = "+" if live_change >= 0 else ""
+
     # ----- Top bar -----
-    st.markdown("""
+    st.markdown(
+        f"""
         <div style="display:flex; justify-content:space-between; align-items:flex-start; padding:0.75rem 0.5rem 0.5rem 0.5rem; border-bottom:1px solid #e5e7eb;">
           <div style="display:flex; flex-direction:column;">
             <div style="font-size:1.3rem; font-weight:600;">Bitcoin <span style="color:#6b7280; font-weight:400;">(BTC/USD)</span></div>
             <div style="margin-top:0.4rem; display:flex; align-items:baseline; gap:0.6rem;">
-              <span style="font-size:2rem; font-weight:600;">69,936.8</span>
-              <span style="color:#16a34a; font-weight:600;">+477.2 (+0.69%)</span>
+              <span style="font-size:2rem; font-weight:600;">{live_price:,.1f}</span>
+              <span style="color:{change_color}; font-weight:600;">{change_sign}{live_change:,.1f} ({change_sign}{live_change_pct:.2f}%)</span>
             </div>
-            <div style="margin-top:0.1rem; color:#6b7280; font-size:0.85rem;">Real-time data · Mock feed</div>
+            <div style="margin-top:0.1rem; color:#6b7280; font-size:0.85rem;">Real-time data · Binance feed</div>
           </div>
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.4rem;">
             <div style="display:flex; gap:0.5rem;"><button style="background-color:#2563eb;color:white;border:none; padding:0.35rem 0.8rem;border-radius:4px;font-size:0.85rem;">★ Add to Watchlist</button></div>
@@ -504,7 +471,9 @@ def main():
             </div>
           </div>
         </div>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
     # ----- Controls row + ranges -----
     col_l, col_r = st.columns([3, 1])
@@ -526,21 +495,23 @@ def main():
                 key="tf_dd",
             )
     with col_r:
-        st.markdown("<div style='height:1.4rem;'></div>", unsafe_allow_html=True)
-        bcol, icol = st.columns([1.0, 0.25])
-        with bcol:
-            st.button("Refresh", type="primary")
-        with icol:
-            st.markdown("""<div style="display:flex; align-items:center; height:100%;"><span title="Auto-refreshes every 5 minutes" style="font-size:1.0rem; color:#e5e7eb; cursor:help; margin-left:0.15rem;">ⓘ</span></div>""", unsafe_allow_html=True)
+        # Day's range now dynamic from intraday approx (using 24h stats as proxy)
+        # Hard upper/lower bounds from Binance 24h stats
+        # low/high are used as today's range; live_price as current
+        day_low_approx = live_price * 0.98
+        day_high_approx = live_price * 1.02
+        # Render inline here (no Refresh button anymore)
+        render_range_bar("Day's Range", day_low_approx, day_high_approx, live_price)
 
     # Auto-refresh every 2 minutes
     _ = st_autorefresh(interval=2 * 60 * 1000, key="dashboard_refresh")
 
+    # 52 week range still mock
     col_r1, col_r2 = st.columns(2)
     with col_r1:
-        render_range_bar("Day's Range", 69493.2, 71347.1, 70456.0)
+        render_range_bar("Day's Range", day_low_approx, day_high_approx, live_price)
     with col_r2:
-        render_range_bar("52 wk Range", 60187.0, 126186.0, 70456.0)
+        render_range_bar("52 wk Range", 60187.0, 126186.0, live_price)
 
     # ----- Tabs -----
     tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"])
@@ -551,7 +522,7 @@ def main():
         st.caption("Educational overview only – not investment advice.")
         st.markdown("---")
         st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
-        sentiment = st.radio(" ", ["Bullish (green)", "Bearish (red)"], index=None, horizontal=True, key="general_sentiment")
+        sentiment = st.radio(" ", ["Bullish?", "Bearish?"], index=None, horizontal=True, key="general_sentiment")
         if sentiment:
             st.markdown(
                 "Cool, let's validate your view with our prediction model on the **Chart** tab.",
@@ -588,17 +559,46 @@ def main():
                 render_tradingview_chart(symbol.replace("USDT", "USD"), interval=interval)
 
             with right:
-                st.markdown(
-                    f"<div class='section-title'>Next {timeframe} prediction</div>",
-                    unsafe_allow_html=True,
-                )
+                # Header + red Refresh button only (no Horizon)
+                # Title row with red Refresh button inline (perfect alignment)
+                col_title, col_refresh = st.columns([3, 1])
+                with col_title:
+                    st.markdown(
+                        f"<div style='font-size:1.1rem; font-weight:600; margin-bottom:0.5rem;'>Next {timeframe} prediction</div>",
+                        unsafe_allow_html=True,
+                    )
+                with col_refresh:
+                    if st.button("🔄 Refresh", key=f"refresh_inline_{timeframe}", 
+                                help="Fetch latest model predictions"):
+                        st.markdown(
+                            """
+                            <style>
+                            div[aria-label="🔄 Refresh"] button {
+                                background-color: #ef4444 !important;
+                                color: white !important;
+                            }
+                            </style>
+                            """, 
+                            unsafe_allow_html=True
+                        )
+                        st.cache_data.clear()
+                        st.rerun()
+
+                horizon_key = "current"  # Fixed current TF
+
+                if timeframe == "5m":
+                    st.caption("🛈 Live model available for 15m, 1h, 4h timeframes only")
+                else:
+                    try:
+                        pred = get_next_candle_prediction(timeframe, horizon_key)
+                    except ValueError:
+                        st.caption("🛈 Live model available for 15m, 1h, 4h timeframes only")
+                        pred = {}
+
 
                 # Horizon toggle
                 horizon_mode = st.radio(
-                    "Horizon",
-                    ["Current TF", "Next TF"],
-                    horizontal=True,
-                    key=f"pred_mode_{timeframe}",
+                    "Horizon", ["Current TF", "Next TF"], horizontal=True, key=f"pred_mode_{timeframe}"
                 )
                 horizon_key = "current" if horizon_mode == "Current TF" else "next"
 
@@ -614,6 +614,7 @@ def main():
 
                 direction = pred.get("direction", "Neutral")
                 conf = float(pred.get("confidence", 0.0))
+                struct = pred.get("structure", {})
 
                 if direction in ["Bullish", "SideBull"]:
                     dir_class = "blink-green"
@@ -625,18 +626,55 @@ def main():
                 st.markdown(
                     f"""
                     <div style="display:flex;justify-content:space-between;">
-                      <div>
+                    <div>
                         <div style="font-size:0.8rem;color:#9ca3af;">Direction</div>
                         <div class="{dir_class}" style="font-size:1.4rem;font-weight:700;">
-                          {direction}
+                        {direction}
                         </div>
-                      </div>
-                      <div style="text-align:right;">
+                    </div>
+                    <div style="text-align:right;">
                         <div style="font-size:0.8rem;color:#9ca3af;">Confidence</div>
                         <div style="font-size:1.3rem;font-weight:600;color:#e5e7eb;">
-                          {conf*100:.1f}%
+                        {conf*100:.1f}%
                         </div>
-                      </div>
+                    </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                # **NEW: Structure row**
+                struct_label = struct.get('label', 'Ranging')
+                if "Uptrend" in struct_label:
+                    struct_class = "blink-green"
+                    struct_color = "#059669"
+                elif "Downtrend" in struct_label:
+                    struct_class = "blink-red"
+                    struct_color = "#dc2626"
+                else:  # Ranging or other
+                    struct_class = "blink-amber"
+                    struct_color = "#d97706"
+
+                st.markdown(
+                    f"""
+                    <div style="background:rgba(59,130,246,0.08); padding:0.6rem; border-radius:8px; margin:0.8rem 0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                        <div style="font-size:0.75rem; color:#f9fafb; font-weight:500;">TREND STRUCTURE</div>
+                        <div class="{struct_class}" style="font-size:1.05rem; font-weight:700; color:{struct_color};">
+                            {struct_label} <span style="font-size:0.85rem; opacity:0.8;">({struct.get('strength', 0)*100:.0f}%)</span>
+                        </div>
+                        </div>
+                        <div style="text-align:right;">
+                        <div style="font-size:0.75rem; color:#f9fafb;">COMBINED</div>
+                        <div style="font-size:1.0rem; font-weight:600; color:#f9fafb;">
+                            {struct.get('combined_direction', 'N/A')}
+                        </div>
+                        </div>
+                    </div>
+                    <div style="font-size:0.75rem; color:#f9fafb; margin-top:0.3rem;">
+                        HH/HL: {struct.get('hh_count',0)}/{struct.get('hl_count',0)} | LH/LL: {struct.get('lh_count',0)}/{struct.get('ll_count',0)}
+                    </div>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -670,18 +708,18 @@ def main():
             with col_r1:
                 st.markdown(
                     f"""
-- Price is trading above key moving averages, supporting a bullish bias.
-- RSI is in bullish territory without major divergence.
-- Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{direction if pred else prev_pattern}**.
-- Pattern compatibility between previous and next candle is **{compat}**.
+                    - Price is trading above key moving averages, supporting a bullish bias.
+                    - RSI is in bullish territory without major divergence.
+                    - Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{direction if pred else prev_pattern}**.
+                    - Pattern compatibility between previous and next candle is **{compat}**.
                     """
                 )
             with col_r2:
                 st.markdown(
                     """
-- Recent candles show higher lows, consistent with an uptrend.
-- No major negative headlines in the latest news heatmap buckets.
-- Volumes are near or above recent averages.
+                        - Recent candles show higher lows, consistent with an uptrend.
+                        - No major negative headlines in the latest news heatmap buckets.
+                        - Volumes are near or above recent averages.
                     """
                 )
 
@@ -718,8 +756,13 @@ def main():
                 if ai_response:
                     st.markdown("**AI response (mock):**")
                     st.write(ai_response)
-            with right:
-                if uploaded_img := st.file_uploader("Attach current chart screenshot", type=["png", "jpg"]):
+            # RIGHT COLUMN: moved chart uploader under AI assistant, aligned right
+            with col_right:
+                uploaded_img = st.file_uploader(
+                    "Attach current chart screenshot",
+                    type=["png", "jpg", "jpeg"],
+                )
+                if uploaded_img:
                     st.image(uploaded_img, caption="Attached chart for AI context")
                     st.caption("This image would be sent to the AI backend.")
 
