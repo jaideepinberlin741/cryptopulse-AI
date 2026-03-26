@@ -1,4 +1,5 @@
 """
+xgb_large_move.py
 XGBoost binary classifier for large-move events in CryptoPulse AI.
 
 For each timeframe/horizon config, it predicts:

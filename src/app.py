@@ -3,6 +3,10 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 import sys
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -17,6 +21,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.live.infer_xgb import get_predictions_for_chart
+
+from src.live.infer_xgb import get_predictions_for_chart
+
+# -------------------------------------------------
+# Raw OHLC sources used for mini chart context
+# -------------------------------------------------
+RAW_FEATURE_CSV_BY_TF = {
+    "15m": "data/raw/btc_15m_raw.csv",
+    "1h":  "data/raw/btc_1h_raw.csv",
+    "4h":  "data/raw/btc_4h_raw.csv",
+}
 
 # ============ Page config & CSS ============
 
@@ -131,68 +146,52 @@ def classify_candle_pattern(open_p: float, high_p: float, low_p: float, close_p:
         return "Hanging Man"
     return "Standard"
 
-# ============ Real prediction helper ============
 
-MODEL_TF_MAP = {
-    "15m": "15m",
-    "1h": "1h",
-    "4h": "4h",
-    "1d": "4h",  # 1d chart uses 4h models (4h→4h, 4h→1d)
-}
+def compatibility_score(prev_pattern: str, next_pattern: str) -> str:
+    """Mock compatibility between previous candle pattern and next predicted candle."""
+    bullish_continuation = {"Marubozu", "Standard"}
+    bearish_reversal = {"Hanging Man", "Doji"}
+
+    if prev_pattern in bullish_continuation and next_pattern in bullish_continuation:
+        return "High"
+    if prev_pattern in bearish_reversal and next_pattern in bullish_continuation:
+        return "Low"
+    return "Medium"
+
+# ============ Real prediction helpers ============
 
 def get_next_candle_prediction(chart_tf: str, horizon_mode: str = "current") -> dict:
-    """Get real prediction from XGBoost models for the selected chart TF."""
-    preds = get_predictions_for_chart(chart_tf)  # [current_tf, next_tf]
+    """
+    Wrap infer_xgb.get_predictions_for_chart:
+      chart_tf='15m' -> [15m->15m, 15m->1h]
+      chart_tf='1h'  -> [1h->1h, 1h->4h]
+      chart_tf='4h'  -> [4h->4h, 4h->1d]
+    """
+    if chart_tf not in {"15m", "1h", "4h"}:
+        raise ValueError(f"Prediction not supported for timeframe: {chart_tf}")
+    preds = get_predictions_for_chart(chart_tf)
     return preds[0] if horizon_mode == "current" else preds[1]
 
-# ============ Real-time range helpers ============
 
-def get_day_and_52w_range() -> tuple[float, float, float, float, float]:
+def load_last_n_candles(tf: str, n: int = 6) -> list[dict]:
     """
-    Compute day's low/high and 52w low/high from 1d features CSV.
-    Returns: (day_low, day_high, wk_low, wk_high, current_close)
+    Load last N OHLC candles for selected timeframe from raw CSV.
     """
-    path = Path("data/processed/btc_1d_features.csv")
+    path_str = RAW_FEATURE_CSV_BY_TF.get(tf)
+    if not path_str:
+        return []
+    path = Path(path_str)
     if not path.exists():
-        # Fallback demo numbers if file missing
-        return 69493.2, 71347.1, 60187.0, 126186.0, 70456.0
-
-    df = pd.read_csv(path)
-    df["open_time"] = pd.to_datetime(df["open_time"])
-    df = df.sort_values("open_time")
-
-    last = df.iloc[-1]
-    day_low = float(last["low"])
-    day_high = float(last["high"])
-    current = float(last["close"])
-
-    cutoff = df["open_time"].max() - pd.Timedelta(days=365)
-    df_52 = df[df["open_time"] >= cutoff]
-    wk_low = float(df_52["low"].min())
-    wk_high = float(df_52["high"].max())
-
-    return day_low, day_high, wk_low, wk_high, current
-
-def load_last_6_candles(tf: str) -> list[dict]:
-    """
-    Load last 6 OHLC candles for selected timeframe from processed feature CSV.
-    Used for rationale pattern analysis.
-    """
-    csv_map = {
-        "15m": "data/processed/btc_15m_features.csv",
-        "1h": "data/processed/btc_1h_features.csv",
-        "4h": "data/processed/btc_4h_features.csv",
-        "1d": "data/processed/btc_1d_features.csv",
-    }
-    path_str = csv_map.get(tf)
-    if not path_str or not Path(path_str).exists():
         return []
 
-    df = pd.read_csv(path_str)
-    df["open_time"] = pd.to_datetime(df["open_time"])
-    df = df.sort_values("open_time")
-    tail = df.tail(6)
+    df = pd.read_csv(path)
+    if "open_time" in df.columns:
+        df["open_time"] = pd.to_datetime(df["open_time"])
+        df = df.sort_values("open_time")
+    else:
+        df = df.sort_index()
 
+    tail = df.tail(n)
     candles = []
     for _, row in tail.iterrows():
         candles.append(
@@ -205,153 +204,141 @@ def load_last_6_candles(tf: str) -> list[dict]:
         )
     return candles
 
-def build_rationale(pred: dict, indicator_states: dict, prev_pattern: str) -> tuple[str, str]:
-    """Build dynamic rationale text from model output + indicators + pattern."""
-    direction = pred.get("direction", "Neutral")
-    conf = float(pred.get("confidence", 0.0))
-    if conf < 0.55:
-        conf_label = "low"
-    elif conf < 0.7:
-        conf_label = "moderate"
-    else:
-        conf_label = "high"
 
-    rsi_state = indicator_states.get("RSI", "")
-    macd_state = indicator_states.get("MACD", "")
-    bb_state = indicator_states.get("Bollinger Bands", "")
-    vol_state = indicator_states.get("Volume", "")
-
-    left_lines = []
-    right_lines = []
-
-    left_lines.append(f"- Model bias is **{direction}** with {conf_label} confidence.")
-    if "Bullish" in rsi_state:
-        left_lines.append("- RSI is in bullish territory, supporting upside.")
-    elif "Bearish" in rsi_state:
-        left_lines.append("- RSI is in bearish territory, limiting upside.")
-    else:
-        left_lines.append("- RSI is in neutral territory, not strongly directional.")
-
-    left_lines.append(f"- Recent candlesticks form a **{prev_pattern}**-type setup.")
-    right_lines.append(f"- MACD: {macd_state}.")
-    right_lines.append(f"- Volumes: {vol_state}.")
-    right_lines.append(f"- Volatility / bands: {bb_state}.")
-
-    return "\n".join(left_lines), "\n".join(right_lines)
-
-# ============ Mini prediction chart (Story 6.3) ============
-def build_mini_prediction_chart(ui_timeframe: str, pred: dict) -> go.Figure:
+def build_mini_prediction_chart(
+    last_candles: list[dict],
+    pred: dict,
+) -> go.Figure:
     """
-    Single synthetic next candle, shaped as a candlestick pattern archetype.
-    This is a visual explainer, not a literal OHLC forecast.
+    Mini chart:
+      - last 5 *real* candles (context)
+      - 1 predicted candle from model output
     """
-    chart_tf = MODEL_TF_MAP[ui_timeframe]
-    
-    FEATURE_CSV_BY_TF = {
-        "15m": "data/processed/btc_15m_features.csv",
-        "1h": "data/processed/btc_1h_features.csv",
-        "4h": "data/processed/btc_4h_features.csv",
-        "1d": "data/processed/btc_1d_features.csv",
-    }
-    csv_path = FEATURE_CSV_BY_TF.get(chart_tf)
+    if len(last_candles) < 1:
+        return go.Figure()
 
-    last_close, last_high, last_low, vol_proxy = 70000.0, 70100.0, 69900.0, 0.002
+    # Context candles
+    ctx = last_candles[-5:]
+    opens = [c["open"] for c in ctx]
+    highs = [c["high"] for c in ctx]
+    lows  = [c["low"]  for c in ctx]
+    closes= [c["close"] for c in ctx]
 
-    if csv_path and Path(csv_path).exists():
-        try:
-            df = pd.read_csv(csv_path).sort_values("open_time")
-            if not df.empty:
-                last_row = df.iloc[-1]
-                last_close = float(last_row["close"])
-                last_high = float(last_row["high"])
-                last_low = float(last_row["low"])
-                if "volatility" in df.columns:
-                    vol_proxy = float(last_row["volatility"])
-        except Exception:
-            pass
+    prev_open  = opens[-1]
+    prev_close = closes[-1]
+    prev_high  = highs[-1]
+    prev_low   = lows[-1]
 
-    recent_range = max(last_high - last_low, last_close * 0.001)
-    base_range = max(recent_range, last_close * max(vol_proxy, 0.001))
+    prev_body  = abs(prev_close - prev_open)
+    prev_range = max(prev_high, prev_low) - min(prev_high, prev_low)
+    avg_body   = prev_body if prev_body > 0 else max(prev_range * 0.25, 1)
+    base_range = prev_range if prev_range > 0 else avg_body * 1.5
 
+    # Predicted return and direction
+    pred_ret = pred.get("predicted_return", None)
     direction = pred.get("direction", "Neutral")
-    confidence = float(pred.get("confidence", 0.0))
 
+    if pred_ret is None:
+        conf = float(pred.get("confidence", 0.0))
+        mag = 0.002 + 0.004 * max(0.0, min(conf, 1.0))  # 0.2–0.6%
+        if direction in ["Bullish", "SideBull"]:
+            pred_ret = mag
+        elif direction in ["Bearish", "SideBear"]:
+            pred_ret = -mag
+        else:
+            pred_ret = 0.0
+
+    target_close = prev_close * (1.0 + float(pred_ret))
+
+    # Direction-based body shape
     if direction in ["Bullish", "SideBull"]:
-        if confidence >= 0.60: pattern_type = "bull_marubozu"
-        elif confidence >= 0.45: pattern_type = "bull_trend"
-        else: pattern_type = "dragonfly"
+        body_size = avg_body * (1.0 if direction == "SideBull" else 1.4)
+        pred_open = target_close - body_size
+        pred_close = target_close
     elif direction in ["Bearish", "SideBear"]:
-        if confidence >= 0.60: pattern_type = "bear_marubozu"
-        elif confidence >= 0.45: pattern_type = "bear_trend"
-        else: pattern_type = "gravestone"
+        body_size = avg_body * (1.0 if direction == "SideBear" else 1.4)
+        pred_open = target_close + body_size
+        pred_close = target_close
     else:
-        pattern_type = "doji" if confidence <= 0.30 else "hammer"
+        body_size = avg_body * 0.3
+        pred_open = target_close - body_size / 2
+        pred_close = target_close + body_size / 2
 
-    def pattern_bull_marubozu():
-        low = last_close - 0.2 * base_range
-        high = last_close + 0.8 * base_range
-        return low + 0.05 * (high-low), high, low, high - 0.02 * (high-low)
+    # Scale body/wicks for next‑TF horizons (e.g. 15m->1h)
+    scale = 4.0 if pred.get("horizon") == "1h" and pred.get("timeframe") == "15m" else 1.0
+    body_size *= scale
 
-    def pattern_bear_marubozu():
-        low = last_close - 0.8 * base_range
-        high = last_close + 0.2 * base_range
-        return high - 0.05 * (high-low), high, low, low + 0.02 * (high-low)
+    wick_scale = 0.4
+    wick_range = base_range * wick_scale * scale
 
-    def pattern_bull_trend():
-        low = last_close - 0.3 * base_range
-        high = last_close + 0.7 * base_range
-        return low + 0.20 * (high-low), high, low, low + 0.75 * (high-low)
+    pred_high = max(pred_open, pred_close) + wick_range * 0.6
+    pred_low  = min(pred_open, pred_close) - wick_range * 0.4
 
-    def pattern_bear_trend():
-        low = last_close - 0.7 * base_range
-        high = last_close + 0.3 * base_range
-        return low + 0.80 * (high-low), high, low, low + 0.25 * (high-low)
+    opens.append(pred_open)
+    highs.append(pred_high)
+    lows.append(pred_low)
+    closes.append(pred_close)
 
-    def pattern_doji():
-        low = last_close - 0.6 * base_range
-        high = last_close + 0.6 * base_range
-        mid = (low + high) / 2.0
-        return mid - 0.015 * base_range, high, low, mid + 0.015 * base_range
+    xs = list(range(len(opens)))
+    fig = go.Figure()
 
-    def pattern_dragonfly():
-        high = last_close + 0.15 * base_range
-        low = last_close - 0.85 * base_range
-        o = c = high - 0.05 * (high - low)
-        return o, high, low, c
+    # Context candles (grey)
+    fig.add_trace(
+        go.Candlestick(
+            x=xs[:-1],
+            open=opens[:-1],
+            high=highs[:-1],
+            low=lows[:-1],
+            close=closes[:-1],
+            increasing_line_color="#9ca3af",
+            decreasing_line_color="#9ca3af",
+            increasing_fillcolor="rgba(156,163,175,0.4)",
+            decreasing_fillcolor="rgba(156,163,175,0.4)",
+            showlegend=False,
+            name="Context",
+        )
+    )
 
-    def pattern_gravestone():
-        high = last_close + 0.85 * base_range
-        low = last_close - 0.15 * base_range
-        o = c = low + 0.05 * (high - low)
-        return o, high, low, c
+    # Predicted candle color
+    if direction in ["Bullish", "SideBull"]:
+        inc_col = "#16a34a"
+        dec_col = "#16a34a"
+    elif direction in ["Bearish", "SideBear"]:
+        inc_col = "#dc2626"
+        dec_col = "#dc2626"
+    else:
+        inc_col = "#6b7280"
+        dec_col = "#6b7280"
 
-    def pattern_hammer():
-        high = last_close + 0.2 * base_range
-        low = last_close - 0.8 * base_range
-        body_top = low + 0.65 * (high-low)
-        body_bottom = low + 0.55 * (high-low)
-        return (body_bottom, body_top) if direction not in ["Bearish", "SideBear"] else (body_top, body_bottom), high, low, (body_top if direction not in ["Bearish", "SideBear"] else body_bottom)
+    fig.add_trace(
+        go.Candlestick(
+            x=xs[-1:],
+            open=opens[-1:],
+            high=highs[-1:],
+            low=lows[-1:],
+            close=closes[-1:],
+            increasing_line_color=inc_col,
+            decreasing_line_color=dec_col,
+            increasing_fillcolor="rgba(22,163,74,0.7)",
+            decreasing_fillcolor="rgba(220,38,38,0.7)",
+            showlegend=False,
+            name="Predicted",
+        )
+    )
 
-    pattern_funcs = {
-        "bull_marubozu": pattern_bull_marubozu, "bear_marubozu": pattern_bear_marubozu,
-        "bull_trend": pattern_bull_trend, "bear_trend": pattern_bear_trend,
-        "doji": pattern_doji, "dragonfly": pattern_dragonfly,
-        "gravestone": pattern_gravestone, "hammer": pattern_hammer
-    }
-    
-    o, high, low, c = pattern_funcs.get(pattern_type, pattern_doji)()
-
-    if direction in ["Bullish", "SideBull"]: color = "#22c55e"
-    elif direction in ["Bearish", "SideBear"]: color = "#ef4444"
-    else: color = "#9ca3af"
-
-    fig = go.Figure(data=[go.Candlestick(
-        x=[0], open=[o], high=[high], low=[low], close=[c],
-        increasing_line_color=color, decreasing_line_color=color,
-        increasing_fillcolor=color, decreasing_fillcolor=color,
-        showlegend=False,
-    )])
-    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), xaxis=dict(visible=False), yaxis=dict(gridcolor="#1f2937"), paper_bgcolor="#020617", plot_bgcolor="#020617", height=220)
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=10, b=0),
+        xaxis=dict(visible=False, showgrid=False, zeroline=False),
+        yaxis=dict(
+            title="Price",
+            showgrid=True,
+            gridcolor="#1f2937",
+            zeroline=False,
+        ),
+        paper_bgcolor="#020617",
+        plot_bgcolor="#020617",
+        height=220,
+    )
     return fig
 
 # ============ Mock backend functions ============
@@ -527,8 +514,17 @@ def main():
             st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>", unsafe_allow_html=True)
             symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
         with c2:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>", unsafe_allow_html=True)
-            ui_timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=1, label_visibility="collapsed", key="tf_dd")
+            st.markdown(
+                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
+                unsafe_allow_html=True,
+            )
+            timeframe = st.selectbox(
+                "Timeframe",
+                ["5m", "15m", "1h", "4h", "1d"],
+                index=0,
+                label_visibility="collapsed",
+                key="tf_dd",
+            )
     with col_r:
         st.markdown("<div style='height:1.4rem;'></div>", unsafe_allow_html=True)
         bcol, icol = st.columns([1.0, 0.25])
@@ -537,79 +533,189 @@ def main():
         with icol:
             st.markdown("""<div style="display:flex; align-items:center; height:100%;"><span title="Auto-refreshes every 5 minutes" style="font-size:1.0rem; color:#e5e7eb; cursor:help; margin-left:0.15rem;">ⓘ</span></div>""", unsafe_allow_html=True)
 
-    _ = st_autorefresh(interval=5 * 60 * 1000, key="dashboard_refresh")
-    day_low, day_high, wk_low, wk_high, cur_price = get_day_and_52w_range()
+    # Auto-refresh every 2 minutes
+    _ = st_autorefresh(interval=2 * 60 * 1000, key="dashboard_refresh")
+
     col_r1, col_r2 = st.columns(2)
-    with col_r1: render_range_bar("Day's Range", day_low, day_high, cur_price)
-    with col_r2: render_range_bar("52 wk Range", wk_low, wk_high, cur_price)
+    with col_r1:
+        render_range_bar("Day's Range", 69493.2, 71347.1, 70456.0)
+    with col_r2:
+        render_range_bar("52 wk Range", 60187.0, 126186.0, 70456.0)
 
     # ----- Tabs -----
     tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"])
 
     with tab_general:
         st.subheader("About Bitcoin", anchor=False)
-        st.write("Bitcoin is the first decentralized cryptocurrency... not financial advice.")
+        st.write("Bitcoin (BTC) is the first and most well-known cryptocurrency—a type of digital money that runs on a decentralized network instead of a bank or government.")
         st.caption("Educational overview only – not investment advice.")
         st.markdown("---")
         st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
         sentiment = st.radio(" ", ["Bullish (green)", "Bearish (red)"], index=None, horizontal=True, key="general_sentiment")
         if sentiment:
-            st.markdown("<span style='font-size:0.9rem; color:#9ca3af;'>Cool, let's validate your view with our prediction model on the <b>Chart</b> tab.</span>", unsafe_allow_html=True)
+            st.markdown(
+                "Cool, let's validate your view with our prediction model on the **Chart** tab.",
+                unsafe_allow_html=True,
+            )
 
     with tab_chart:
-        last_6 = load_last_6_candles(ui_timeframe)
-        prev_pattern = "Standard"
-        if len(last_6) > 1:
-            prev_pattern = classify_candle_pattern(last_6[-2]["open"], last_6[-2]["high"], last_6[-2]["low"], last_6[-2]["close"])
+        # real last 6 candles for pattern analysis + mini chart
+        last_6 = load_last_n_candles(timeframe, n=6)
+
+        prev_patterns = []
+        for row in last_6[:-1]:
+            patt = classify_candle_pattern(row["open"], row["high"], row["low"], row["close"])
+            prev_patterns.append(patt)
+        prev_pattern = prev_patterns[-1] if prev_patterns else "Standard"
 
         chart_container, rationale_container, ai_container = st.container(), st.container(), st.container()
 
         with chart_container:
             left, right = st.columns([3, 1])
             with left:
-                st.markdown("<div style='font-size:1.1rem; font-weight:600;'>● <span style='color:#22c55e;'>Live</span><span style='margin-left:0.35rem;'>BTC</span><span style='font-size:0.9rem; color:#6b7280;'> (BTC/USDT)</span></div>", unsafe_allow_html=True)
-                interval_map = {"15m": "15", "1h": "60", "4h": "240", "1d": "D"}
-                render_tradingview_chart(symbol, interval=interval_map.get(ui_timeframe, "60"))
+                st.markdown(
+                    """
+                    <div style='font-size:1.1rem; font-weight:600;'>
+                      ● <span style='color:#22c55e;'>Live</span>
+                      <span style='margin-left:0.35rem;'>BTC</span>
+                      <span style='font-size:0.9rem; color:#6b7280;'> (BTC/USDT)</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                interval_map = {"5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "D"}
+                interval = interval_map.get(timeframe, "60")
+                render_tradingview_chart(symbol.replace("USDT", "USD"), interval=interval)
+
             with right:
-                st.markdown(f"<div style='font-size:1.1rem; font-weight:600;'>Next {ui_timeframe} prediction</div>", unsafe_allow_html=True)
-                pred_mode_label = st.radio("Horizon", ["Current TF", "Next TF"], horizontal=True, key=f"pred_mode_{ui_timeframe}")
-                horizon_mode = "current" if pred_mode_label == "Current TF" else "next"
-                pred = get_next_candle_prediction(ui_timeframe, horizon_mode=horizon_mode) if ui_timeframe in {"15m", "1h", "4h"} else {}
-                
-                if pred:
-                    direction = pred.get("direction", "Neutral")
-                    dir_class = "blink-green" if direction in ["Bullish", "SideBull"] else "blink-red" if direction in ["Bearish", "SideBear"] else "blink-amber"
-                    st.markdown(f"""
-                        <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-top:0.4rem;">
-                          <div><div style="font-size:0.85rem; color:#9ca3af;">Direction</div><div class="{dir_class}" style="font-size:1.8rem; font-weight:700;">{direction}</div></div>
-                          <div style="text-align:right;"><div style="font-size:0.85rem; color:#9ca3af;">Confidence</div><div style="font-size:1.4rem; font-weight:600;">{pred.get("confidence", 0.0):.1%}</div></div>
-                        </div>
-                        <div style="font-size:0.80rem; color:#9ca3af; margin-top:0.35rem;">Model input: <b>{pred.get("as_of", "n/a")}</b> · {pred.get("timeframe", ui_timeframe)} → {pred.get("horizon", ui_timeframe)}</div>
-                        """, unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='section-title'>Next {timeframe} prediction</div>",
+                    unsafe_allow_html=True,
+                )
+
+                # Horizon toggle
+                horizon_mode = st.radio(
+                    "Horizon",
+                    ["Current TF", "Next TF"],
+                    horizontal=True,
+                    key=f"pred_mode_{timeframe}",
+                )
+                horizon_key = "current" if horizon_mode == "Current TF" else "next"
+
+                # Real model prediction
+                if timeframe == "5m":
+                    st.info("Live model is available for 15m, 1h and 4h timeframes.")
+                    return
+                try:
+                    pred = get_next_candle_prediction(timeframe, horizon_key)
+                except ValueError:
+                    st.info("Live model is available for 15m, 1h and 4h timeframes.")
+                    return
+
+                direction = pred.get("direction", "Neutral")
+                conf = float(pred.get("confidence", 0.0))
+
+                if direction in ["Bullish", "SideBull"]:
+                    dir_class = "blink-green"
+                elif direction in ["Bearish", "SideBear"]:
+                    dir_class = "blink-red"
                 else:
-                    st.write("Model not trained for this timeframe yet.")
-                
-                st.plotly_chart(build_mini_prediction_chart(ui_timeframe, pred), use_container_width=True)
+                    dir_class = "blink-amber"
+
+                st.markdown(
+                    f"""
+                    <div style="display:flex;justify-content:space-between;">
+                      <div>
+                        <div style="font-size:0.8rem;color:#9ca3af;">Direction</div>
+                        <div class="{dir_class}" style="font-size:1.4rem;font-weight:700;">
+                          {direction}
+                        </div>
+                      </div>
+                      <div style="text-align:right;">
+                        <div style="font-size:0.8rem;color:#9ca3af;">Confidence</div>
+                        <div style="font-size:1.3rem;font-weight:600;color:#e5e7eb;">
+                          {conf*100:.1f}%
+                        </div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                st.markdown(
+                    f"Model input: {pred.get('as_of')} · {pred.get('timeframe')} → {pred.get('horizon')}",
+                    unsafe_allow_html=True,
+                )
+
+                # Mini prediction chart: last 5 real candles + 1 forecast candle
+                recent = load_last_n_candles(timeframe, n=6)
+                mini_fig = build_mini_prediction_chart(recent, pred)
+                st.plotly_chart(mini_fig, use_container_width=True)
+
+                st.caption(
+                    "Mini prediction chart: last 5 closed candles (grey) plus the "
+                    "model's forecast candle for the next bar of the selected timeframe."
+                )
 
         with rationale_container:
             st.markdown("---")
-            st.markdown("<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>", unsafe_allow_html=True)
-            left, right = st.columns(2)
-            left_text, right_text = build_rationale(pred, get_indicator_states(symbol, ui_timeframe), prev_pattern)
-            left.markdown(left_text)
-            right.markdown(right_text)
+            st.markdown(
+                "<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>",
+                unsafe_allow_html=True,
+            )
+            col_r1, col_r2 = st.columns(2)
+
+            compat = compatibility_score(prev_pattern, direction if pred else prev_pattern)
+
+            with col_r1:
+                st.markdown(
+                    f"""
+- Price is trading above key moving averages, supporting a bullish bias.
+- RSI is in bullish territory without major divergence.
+- Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{direction if pred else prev_pattern}**.
+- Pattern compatibility between previous and next candle is **{compat}**.
+                    """
+                )
+            with col_r2:
+                st.markdown(
+                    """
+- Recent candles show higher lows, consistent with an uptrend.
+- No major negative headlines in the latest news heatmap buckets.
+- Volumes are near or above recent averages.
+                    """
+                )
 
         with ai_container:
             st.markdown("---")
             st.markdown("### AI trade assistant (mock backend)", unsafe_allow_html=True)
-            left, right = st.columns([2, 1])
-            with left:
-                st.write("Describe your scenario...")
-                key_level = st.number_input("Key level", value=68000.0, step=100.0)
-                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"])
-                user_msg = st.text_area("Your question to the AI", "If we get a breakdown...")
-                if st.button("Ask AI about this scenario"):
-                    ai_response = ask_ai_trade_assistant(key_level, move_type, ui_timeframe, user_msg)
+
+            col_left, col_right = st.columns([2, 1])
+            with col_left:
+                st.write(
+                    "Describe your scenario, e.g. "
+                    "`If we get a breakdown of 68,000 on 1h, what should RSI/MACD/volume look like?`"
+                )
+                key_level = st.number_input(
+                    "Key level (trendline / support / resistance)", value=68000.0, step=100.0
+                )
+                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"], index=0)
+                user_msg = st.text_area(
+                    "Your question to the AI",
+                    value="If we get a breakdown of this level, what should indicators look like to justify a short?",
+                    height=100,
+                )
+                ask_btn = st.button("Ask AI about this scenario")
+
+                ai_response = None
+                if ask_btn:
+                    ai_response = ask_ai_trade_assistant(
+                        level=key_level,
+                        direction=move_type,
+                        timeframe=timeframe,
+                        message=user_msg,
+                    )
+
+                if ai_response:
                     st.markdown("**AI response (mock):**")
                     st.write(ai_response)
             with right:
@@ -637,10 +743,30 @@ def main():
 
         st.markdown("---")
         st.subheader("Key technical indicators", anchor=False)
-        indicator_states = get_indicator_states(symbol, ui_timeframe)
-        rows = [{"Indicator": name, "Status": state, "Trend support": "Supports uptrend" if "Bullish" in state else "Supports downtrend" if "Bearish" in state else "Neutral / mixed"} for name, state in indicator_states.items()]
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-        st.caption("Mock values for now...")
+
+        indicator_states = get_indicator_states(symbol, timeframe)
+        rows = []
+        trend = get_current_trend(symbol, timeframe)
+        for name, state in indicator_states.items():
+            if "Bullish" in state and trend == "Uptrend":
+                support = "Supports uptrend"
+            elif "Bearish" in state and trend == "Downtrend":
+                support = "Supports downtrend"
+            else:
+                support = "Neutral / mixed"
+            rows.append(
+                {
+                    "Indicator": name,
+                    "Status": state,
+                    "Trend support": support,
+                }
+            )
+        tech_df = pd.DataFrame(rows)
+        st.dataframe(tech_df, use_container_width=True)
+        st.caption(
+            "Mock values for now – this view will later be driven by real indicator "
+            "calculations for the selected symbol and timeframe."
+        )
 
     with tab_history:
         st.subheader("Historical analysis (mock)", anchor=False)

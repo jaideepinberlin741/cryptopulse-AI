@@ -1,4 +1,5 @@
 """
+xgboost_model.py
 XGBoost baseline + evaluation for CryptoPulse AI.
 - Multi-class classification on flattened sliding windows (48x21 → 1008 features).
 - Label remap [-2,-1,0,1,2] → [0..4] for XGBoost.
@@ -66,7 +67,9 @@ KEY_CONFIGS = [
 
 def flatten_features(X: np.ndarray) -> np.ndarray:
     """Flatten sliding windows: (batch, window=48, features=21) → (batch, 1008)."""
+    print("n&&_features:", X.shape[2])
     return X.reshape(X.shape[0], -1)
+    
 
 
 def remap_labels(y: np.ndarray) -> np.ndarray:

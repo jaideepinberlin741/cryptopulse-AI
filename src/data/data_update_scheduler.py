@@ -135,7 +135,7 @@ scheduler.add_job(update_all, 'cron', hour=3, id='daily_full', name='Daily Full'
 scheduler.add_job(
     update_frequent_tfs,
     'interval',
-    minutes=5,
+    minutes=3,
     id='frequent_tfs',
     name='Frequent TFs (raw + features)'
 )
