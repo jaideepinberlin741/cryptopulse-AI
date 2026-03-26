@@ -9,6 +9,62 @@ from ta.volatility import BollingerBands
 TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
 
+def add_structure_features(df: pd.DataFrame, swing_window: int = 5) -> pd.DataFrame:
+    """
+    Add basic price-structure features:
+    - swing_high / swing_low flags
+    - higher_high / higher_low / lower_high / lower_low
+    - simple trend_state over last N swings
+    """
+    # Local swings using rolling max/min
+    df["swing_high"] = (
+        df["high"]
+        == df["high"].rolling(swing_window, center=True).max()
+    ).astype(int)
+
+    df["swing_low"] = (
+        df["low"]
+        == df["low"].rolling(swing_window, center=True).min()
+    ).astype(int)
+
+    # Carry forward last swing prices
+    df["last_swing_high"] = df["high"].where(df["swing_high"] == 1).ffill()
+    df["last_swing_low"] = df["low"].where(df["swing_low"] == 1).ffill()
+
+    # Previous swing prices
+    df["prev_swing_high"] = df["last_swing_high"].shift(1)
+    df["prev_swing_low"] = df["last_swing_low"].shift(1)
+
+    # Structural relationships
+    df["is_higher_high"] = (
+        (df["last_swing_high"] > df["prev_swing_high"])
+    ).astype(int)
+
+    df["is_higher_low"] = (
+        (df["last_swing_low"] > df["prev_swing_low"])
+    ).astype(int)
+
+    df["is_lower_high"] = (
+        (df["last_swing_high"] < df["prev_swing_high"])
+    ).astype(int)
+
+    df["is_lower_low"] = (
+        (df["last_swing_low"] < df["prev_swing_low"])
+    ).astype(int)
+
+    # Simple trend state over last N swings
+    swing_trend = (
+        df["is_higher_high"] + df["is_higher_low"]
+        - df["is_lower_high"] - df["is_lower_low"]
+    ).rolling(5).sum()
+
+    df["trend_state"] = 0
+    df.loc[swing_trend > 0, "trend_state"] = 1   # swing up
+    df.loc[swing_trend < 0, "trend_state"] = -1  # swing down
+
+    return df
+
+
 def engineer_features_for_file(input_csv: str, output_csv: str) -> pd.DataFrame:
     """
     Create OHLCV + engineered features for a single timeframe CSV.
@@ -59,6 +115,9 @@ def engineer_features_for_file(input_csv: str, output_csv: str) -> pd.DataFrame:
     rolling_low = df["low"].rolling(50).min()
     rolling_high = df["high"].rolling(50).max()
     df["price_position"] = (df["close"] - rolling_low) / (rolling_high - rolling_low)
+
+    # --- Structural features: swings & HH/HL vs LL/LH ---
+    df = add_structure_features(df)
 
     # Cleanup NaNs / inf
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -170,6 +229,9 @@ def _add_standard_features(df: pd.DataFrame) -> pd.DataFrame:
     rolling_high = df["high"].rolling(50).max()
     df["price_position"] = (df["close"] - rolling_low) / (rolling_high - rolling_low)
 
+    # --- Structural features: swings & HH/HL vs LL/LH ---
+    df = add_structure_features(df)
+
     df.replace([np.inf, -np.inf], np.nan, inplace=True)
     df.fillna(method="ffill", inplace=True)
     df.dropna(inplace=True)
@@ -220,3 +282,6 @@ def engineer_live_features_all(
     )
 
     print("[LIVE FEAT] Updated live 15m/1h/4h feature files.")
+
+if __name__ == "__main__":
+    engineer_features_all_timeframes()

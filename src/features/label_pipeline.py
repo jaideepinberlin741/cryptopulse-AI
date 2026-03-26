@@ -146,15 +146,85 @@ def classify_direction(
         return -1
     return 0
 
+def assign_trend_labels_from_structure(
+    df: pd.DataFrame,
+    hh_col: str = "is_higher_high",
+    hl_col: str = "is_higher_low",
+    lh_col: str = "is_lower_high",
+    ll_col: str = "is_lower_low",
+    trend_state_col: str = "trend_state",
+    swing_window: int = 5,
+) -> pd.Series:
+    """
+    Build 5-class trend labels using swing structure features:
+
+    -2 = Bearish (persistent LH+LL, trend_state < 0)
+    -1 = SideBear (weak/early downtrend)
+     0 = Neutral (mixed / noisy structure)
+     1 = SideBull (weak/early uptrend)
+     2 = Bullish (persistent HH+HL, trend_state > 0)
+    """
+    hh = df[hh_col].astype(int)
+    hl = df[hl_col].astype(int)
+    lh = df[lh_col].astype(int)
+    ll = df[ll_col].astype(int)
+    ts = df[trend_state_col].astype(int)
+
+    # rolling counts of structural confirmations
+    up_score = (hh + hl).rolling(swing_window, min_periods=1).sum()
+    down_score = (lh + ll).rolling(swing_window, min_periods=1).sum()
+
+    up_ratio = up_score / swing_window
+    down_ratio = down_score / swing_window
+
+    labels = np.zeros(len(df), dtype=np.int8)
+
+    # thresholds – tune later if needed
+    strong_thresh = 0.6   # ≥60% of last N swings aligned
+    weak_thresh   = 0.4   # 30–60% = SideBull/SideBear
+
+    # Strong Bullish
+    bull_strong = (up_ratio >= strong_thresh) & (up_ratio > down_ratio) & (ts > 0)
+    labels[bull_strong.values] = 2
+
+    # Strong Bearish
+    bear_strong = (down_ratio >= strong_thresh) & (down_ratio > up_ratio) & (ts < 0)
+    labels[bear_strong.values] = -2
+
+    # Weak / grinding up
+    bull_weak = (
+        (labels == 0)
+        & (up_ratio >= weak_thresh)
+        & (up_ratio > down_ratio)
+    )
+    labels[bull_weak] = 1
+
+    # Weak / grinding down
+    bear_weak = (
+        (labels == 0)
+        & (down_ratio >= weak_thresh)
+        & (down_ratio > up_ratio)
+    )
+    labels[bear_weak] = -1
+
+    # Remaining stay 0 (Neutral)
+    return pd.Series(labels, index=df.index)
 
 # ---------------------------------------------------------------------
 # Label generation for one DataFrame
 # ---------------------------------------------------------------------
 
 def add_multi_horizon_labels(df: pd.DataFrame, cfg: PipelineConfig) -> pd.DataFrame:
-    
+    """
+    For each horizon h in cfg.horizons:
+      - compute future_price_h, future_return_h, large_move_h
+    Then:
+      - compute a single trend-based label from structure features
+        and reuse it as label_h for all horizons of this TF.
+    """
     df = df.copy()
 
+    # 1) Horizon-specific future prices / returns / large-move flags
     for h in cfg.horizons:
         td = horizon_to_timedelta(h)
         thr = HORIZON_THRESHOLDS[h]
@@ -168,28 +238,21 @@ def add_multi_horizon_labels(df: pd.DataFrame, cfg: PipelineConfig) -> pd.DataFr
         df[future_price_col] = df[cfg.price_col].reindex(future_index).values
         df[future_return_col] = df[future_price_col] / df[cfg.price_col] - 1.0
 
-        # New: large-move indicator (absolute return >= threshold)
+        # large-move indicator
         df[large_move_col] = (df[future_return_col].abs() >= thr).astype(np.int8)
 
-        # Existing directional label logic...
-        rets = df[future_return_col].values
-        labels = np.zeros_like(rets, dtype=np.int8)
-        prev_dir = 0
-        for i, r in enumerate(rets):
-            if np.isnan(r):
-                labels[i] = 0
-            else:
-                d = classify_direction(r, prev_dir, thr)
-                labels[i] = d
-                prev_dir = d
-        df[label_col] = labels
+    # 2) Trend-based direction label from structure (shared across horizons)
+    trend_labels = assign_trend_labels_from_structure(df)
 
+    for h in cfg.horizons:
+        df[f"label_{h}"] = trend_labels.astype(np.int8)
+
+    # 3) Drop rows where any future price is NaN (incomplete horizons)
     if cfg.drop_incomplete:
         future_cols = [f"future_price_{h}" for h in cfg.horizons]
         df = df.dropna(subset=future_cols)
 
     return df
-
 
 # ---------------------------------------------------------------------
 # Sliding windows
@@ -309,13 +372,20 @@ def build_dataset_from_csv(
 if __name__ == "__main__":
     # All engineered feature columns
     feature_cols = [
-        "open", "high", "low", "close", "volume",
+       "open", "high", "low", "close", "volume",
         "returns", "hl_range", "hl_pct",
         "volatility", "volatility_short",
         "sma_20", "sma_50", "sma_ratio",
         "rsi", "macd", "macd_signal", "macd_histogram",
         "bb_width", "bb_position",
         "volume_ratio", "price_position",
+        # new structural features
+        "swing_high", "swing_low",
+        "last_swing_high", "last_swing_low",
+        "prev_swing_high", "prev_swing_low",
+        "is_higher_high", "is_higher_low",
+        "is_lower_high", "is_lower_low",
+        "trend_state",
     ]
 
     for tf in TIMEFRAMES:

@@ -52,6 +52,13 @@ FEATURE_COLS = [
     "rsi", "macd", "macd_signal", "macd_histogram",
     "bb_width", "bb_position",
     "volume_ratio", "price_position",
+    # new structural features
+    "swing_high", "swing_low",
+    "last_swing_high", "last_swing_low",
+    "prev_swing_high", "prev_swing_low",
+    "is_higher_high", "is_higher_low",
+    "is_lower_high", "is_lower_low",
+    "trend_state",
 ]
 
 FEATURE_CSV_BY_TF: Dict[str, str] = {

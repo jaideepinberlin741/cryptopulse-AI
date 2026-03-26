@@ -1,4 +1,5 @@
 """
+xgboost_regression.py
 XGBoost regression model for CryptoPulse AI.
 Predicts next-horizon return using the same 48x21 features and splits as the classifier.
 
@@ -33,52 +34,12 @@ KEY_CONFIGS = [
     ("1h", "4h"),
 ]
 
-
 def flatten_features(X: np.ndarray) -> np.ndarray:
     """Flatten sliding windows: (batch, window=48, features=21) → (batch, 1008)."""
     return X.reshape(X.shape[0], -1)
 
-
 def get_key_configs():
     return [TrainingConfig(timeframe=tf, horizon=hz) for tf, hz in KEY_CONFIGS]
-
-
-def build_return_target(
-    X: np.ndarray,
-    y: np.ndarray,
-    t: np.ndarray,
-    config: TrainingConfig,
-) -> np.ndarray:
-    """
-    Build a continuous target for regression.
-    For now: use the same price that was used for labeling the horizon, but as a % move.
-
-    ASSUMPTION:
-    - load_dataset(config) returns y that was created from some underlying price
-      (e.g. close at horizon vs current close).
-    - We will reconstruct an approximate return using the label + a fixed step size
-      OR, more realistically, you can replace this with your own precomputed returns.
-
-    SIMPLE VERSION:
-    - Use the original label as an ordered proxy and map it to a rough return:
-        -2 -> -0.006  (-0.6%)
-        -1 -> -0.003  (-0.3%)
-         0 ->  0.000
-         1 ->  0.003  (+0.3%)
-         2 ->  0.006  (+0.6%)
-    This is a placeholder until you wire in true horizon returns from your data.
-    """
-    label_to_return = {
-        -2: -0.006,
-        -1: -0.003,
-        0: 0.0,
-        1: 0.003,
-        2: 0.006,
-    }
-    # y here is original label [-2..2] if you call load_dataset with the label you used.
-    return np.vectorize(label_to_return.get)(y).astype(np.float32)
-
-from pathlib import Path
 
 def load_return_target(config: TrainingConfig) -> np.ndarray:
     base_path = Path(config.data_dir)
@@ -118,7 +79,6 @@ def evaluate_regression(y_true: np.ndarray, y_pred: np.ndarray, split_name: str)
         f"{split_name}_r2": float(r2),
     }
 
-
 def save_regression_predictions(
     y_true: np.ndarray,
     y_pred: np.ndarray,
@@ -143,7 +103,6 @@ def save_regression_predictions(
     print(f" ✓ {split_name} regression predictions saved: {out_path}")
     return out_path
 
-
 def train_xgboost_regressor(
     config: TrainingConfig,
     max_tune_samples: int = 20_000,
@@ -165,8 +124,8 @@ def train_xgboost_regressor(
     X, y, t, label_cols = load_dataset(config)
     X_flat = flatten_features(X)
 
-    # y here is your original directional label [-2..2]; we convert it to a rough return.
-    y_target = build_return_target(X, y, t, config)
+    # Use true future_return_<horizon> from labels_y.npy
+    y_target = load_return_target(config)
     print(f" Target stats: mean={y_target.mean():.6f}, std={y_target.std():.6f}")
 
     train_idx, val_idx, test_idx = make_timeseries_splits(t, config)
