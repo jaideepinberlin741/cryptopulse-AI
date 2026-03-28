@@ -15,10 +15,6 @@ def fetch_categorized_news(symbol: str):
     Returns categorized news for a given symbol.
     For now this uses mock data.
     """
-    from .mock_data import MOCK_NEWS
-
-    return MOCK_NEWS
-
 
     # 1. Fallback if API key crashes
     if not NEWS_API_KEY:
