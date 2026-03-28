@@ -19,3 +19,4 @@ ta
 streamlit
 streamlit-autorefresh
 xgboost
+python-dotenv

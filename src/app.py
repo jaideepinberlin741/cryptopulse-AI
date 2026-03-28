@@ -1,7 +1,9 @@
+import os
 import random
 from datetime import datetime, timedelta, date
 from pathlib import Path
 import sys
+import textwrap
 import requests  # NEW
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 from components.news_panel import render_news_panel
 from collections import defaultdict
+from dotenv import load_dotenv 
 
 # Ensure project root is on sys.path so `src` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +25,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.live.infer_xgb import get_predictions_for_chart
+
+load_dotenv()  # loads from .env in project root
+
+from groq import Groq
+
+@st.cache_resource
+def get_groq_client():
+    if not GROQ_API_KEY:
+        return None
+    return Groq(api_key=GROQ_API_KEY)
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if "ai_response" not in st.session_state:
+    st.session_state.ai_response = None
 
 # -------------------------------------------------
 # Raw OHLC sources used for mini chart context
@@ -31,6 +49,141 @@ RAW_FEATURE_CSV_BY_TF = {
     "1h":  "data/raw/btc_1h_raw.csv",
     "4h":  "data/raw/btc_4h_raw.csv",
 }
+
+# Map chart timeframe → LIVE features CSV
+FEATURE_CSV_BY_TF = {
+    "5m":  "data/processed/btc_5m_live_features.csv",
+    "15m": "data/processed/btc_15m_live_features.csv",
+    "1h":  "data/processed/btc_1h_live_features.csv",
+    "4h":  "data/processed/btc_4h_live_features.csv",
+    "1d":  "data/processed/btc_1d_live_features.csv",
+}
+
+@st.cache_resource
+def get_groq_client():
+    if not GROQ_API_KEY:
+        return None
+    return Groq(api_key=GROQ_API_KEY)
+
+SYSTEM_PROMPT = textwrap.dedent(
+    """
+    You are CryptoPulse AI, a professional crypto trader and quantitative analyst.
+    You advise on Bitcoin trading scenarios using:
+    - Model prediction (direction + confidence)
+    - Market structure (HH/HL, LH/LL, combined_direction from trend_direction.py), candlestick patterns
+    - RSI, MACD, volume, moving averages, Bollinger Bands
+    - Multi-timeframe context (5m, 15m, 1h, 4h, 1d)
+
+    Respond with:
+    - Clear, actionable guidance for the exact scenario and level the user mentions.
+    - Explicitly comment on whether the model prediction and structure SUPPORT or CONTRADICT the scenario.
+    - Mention how RSI, MACD, volume and structure should ideally look.
+    - Be concise (3–7 short bullets), no fluff, no disclaimers.
+    - Only refer to the level the user gives.
+    - Suggest next steps to trade with clear entry points, SL and targets. 
+    - Advise clearly if model prediction is not clear, validate other signals, candlestick patterns and market structure.
+    - At the end, add clear note saying "This is AI generated analysis. There is no guarantee in financial markets.
+    - Trade responsibly, Capital at risk. 
+    """
+)
+
+def call_ai_trade_assistant(
+    level: float,
+    direction: str,
+    timeframe: str,
+    message: str,
+    latest_indicators: dict | None = None,
+    model_direction: str | None = None,
+    model_confidence: float | None = None,
+    trend_structure: dict | None = None,
+) -> str:
+    """
+    Call Groq LLM to get a trade explanation for this scenario.
+    Includes model prediction + structure context.
+    """
+    client = get_groq_client()
+    if client is None:
+        return "AI backend is not configured. Please set GROQ_API_KEY to enable the assistant."
+
+    indicators_text = ""
+    if latest_indicators:
+        indicators_text = (
+            f"\nLatest indicators for BTC {timeframe}:\n"
+            f"- RSI: {latest_indicators.get('rsi', 'N/A'):.1f}\n"
+            f"- MACD: {latest_indicators.get('macd', 'N/A'):.4f} "
+            f"(signal {latest_indicators.get('macd_signal', 'N/A'):.4f})\n"
+            f"- Volume ratio: {latest_indicators.get('volume_ratio', 'N/A'):.2f}x\n"
+            f"- SMA ratio (price / SMA): {latest_indicators.get('sma_ratio', 'N/A'):.3f}\n"
+            f"- Bollinger position (0=lower,1=upper): {latest_indicators.get('bb_position', 'N/A'):.2f}\n"
+        )
+
+    model_text = ""
+    if model_direction is not None:
+        conf_pct = f"{model_confidence * 100:.1f}%" if model_confidence is not None else "N/A"
+        model_text += (
+            f"\nModel prediction:\n"
+            f"- Direction: {model_direction}\n"
+            f"- Confidence: {conf_pct}\n"
+        )
+
+    if trend_structure:
+        model_text += (
+            "\nTrend structure (from HH/HL vs LH/LL):\n"
+            f"- Label: {trend_structure.get('label', 'N/A')}\n"
+            f"- Strength: {trend_structure.get('strength', 0.0):.2f}\n"
+            f"- Combined direction: {trend_structure.get('combined_direction', 'N/A')}\n"
+            f"- HH/HL vs LH/LL counts: "
+            f"HH {trend_structure.get('hh_count', 0)}, "
+            f"HL {trend_structure.get('hl_count', 0)}, "
+            f"LH {trend_structure.get('lh_count', 0)}, "
+            f"LL {trend_structure.get('ll_count', 0)}\n"
+        )
+
+    user_prompt = textwrap.dedent(
+        f"""
+        User scenario:
+        - Timeframe: {timeframe}
+        - Key level: {level}
+        - Scenario: {direction} (price {'breaking below' if direction=='Breakdown' else 'breaking above'} this level)
+
+        User question:
+        {message}
+
+        {indicators_text}
+        {model_text}
+        """
+    )
+
+    try:
+        chat = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=450,
+        )
+        return chat.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error contacting AI backend: {e}"
+
+@st.cache_data(ttl=120)  # 2min cache, keeps rationale in sync with 2min UI refresh
+def get_live_indicators(timeframe: str):
+    """Load latest indicators from LIVE features CSV for the given timeframe."""
+    csv_path = FEATURE_CSV_BY_TF.get(timeframe)
+    if not csv_path or not Path(csv_path).exists():
+        return {}
+
+    df = pd.read_csv(csv_path).tail(1).iloc[0]
+    return {
+        "rsi": df.get("rsi", 50),
+        "macd": df.get("macd", 0),
+        "macd_signal": df.get("macd_signal", 0),
+        "volume_ratio": df.get("volume_ratio", 1.0),
+        "sma_ratio": df.get("sma_ratio", 1.0),
+        "bb_position": df.get("bb_position", 0.5),
+    }
 
 # ============ Simple live price helper ============
 
@@ -242,7 +395,7 @@ def build_mini_prediction_chart(last_candles: list[dict], pred: dict) -> go.Figu
 
     # Predicted candle (clear color + nice body)
     pred_ret = pred.get("predicted_return") or 0.003 * (1 if pred.get("direction") in ["Bullish"] else -1 if pred.get("direction") in ["Bearish"] else 0)
-    direction = pred.get("direction", "Neutral")
+    direction = pred.get("direction")
     target_close = prev_close * (1 + float(pred_ret))
     scale = 3.0 if pred.get("horizon") in ["1h", "4h", "1d"] and pred.get("timeframe") == "15m" else 1.5
 
@@ -420,7 +573,7 @@ def render_news_list(articles: list[dict]):
 
 # ============ TradingView chart embed ============
 
-def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", height: int = 520):
+def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", height: int = 720):
     symbol_tv = symbol.replace("USDT", "USD").replace("USDC", "USD")
     html = f"""
     <!-- TradingView Widget BEGIN -->
@@ -441,7 +594,7 @@ def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", heigh
     </div>
     <!-- TradingView Widget END -->
     """
-    components.html(html, height=height + 40, scrolling=False)
+    components.html(html, height=height + 40, scrolling=True)
 
 # ============ UI ============
 
@@ -475,25 +628,19 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # ----- Controls row + ranges -----
-    col_l, col_r = st.columns([3, 1])
+    # ----- Controls row (Symbol + Timeframe) -----
+    col_l, col_r = st.columns([3, 1]) 
     with col_l:
         c1, _, c2 = st.columns([1.2, 0.4, 1.2])
         with c1:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Symbol</div>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Symbol</div>", unsafe_allow_html=True)
             symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
         with c2:
-            st.markdown(
-                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.2rem;'>Timeframe</div>",
-                unsafe_allow_html=True,
-            )
-            timeframe = st.selectbox(
-                "Timeframe",
-                ["5m", "15m", "1h", "4h", "1d"],
-                index=0,
-                label_visibility="collapsed",
-                key="tf_dd",
-            )
+            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Timeframe</div>", unsafe_allow_html=True)
+            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=0, label_visibility="collapsed", key="tf_dd")
+
+
+
     with col_r:
         # Day's range now dynamic from intraday approx (using 24h stats as proxy)
         # Hard upper/lower bounds from Binance 24h stats
@@ -501,7 +648,7 @@ def main():
         day_low_approx = live_price * 0.98
         day_high_approx = live_price * 1.02
         # Render inline here (no Refresh button anymore)
-        render_range_bar("Day's Range", day_low_approx, day_high_approx, live_price)
+        #render_range_bar("Day's Range", day_low_approx, day_high_approx, live_price)
 
     # Auto-refresh every 2 minutes
     _ = st_autorefresh(interval=2 * 60 * 1000, key="dashboard_refresh")
@@ -541,6 +688,14 @@ def main():
 
         chart_container, rationale_container, ai_container = st.container(), st.container(), st.container()
 
+        FEATURE_CSV_BY_TF = {
+            "15m": "data/processed/btc_15m_features.csv",
+            "1h": "data/processed/btc_1h_features.csv", 
+            "4h": "data/processed/btc_4h_features.csv",
+            "1d": "data/processed/btc_1d_features.csv",
+            "5m": "data/processed/btc_15m_features.csv" 
+        }
+
         with chart_container:
             left, right = st.columns([3, 1])
             with left:
@@ -562,21 +717,15 @@ def main():
                 # Header + red Refresh button only (no Horizon)
                 # Title row with red Refresh button inline (perfect alignment)
                 col_title, col_refresh = st.columns([3, 1])
-                with col_title:
-                    st.markdown(
-                        f"<div style='font-size:1.1rem; font-weight:600; margin-bottom:0.5rem;'>Next {timeframe} prediction</div>",
-                        unsafe_allow_html=True,
-                    )
+                
                 with col_refresh:
-                    if st.button("🔄 Refresh", key=f"refresh_inline_{timeframe}", 
-                                help="Fetch latest model predictions"):
+
+                    if st.button("🔄", key=f"refresh_icon_{timeframe}", 
+                                help="Refresh predictions"):
                         st.markdown(
                             """
                             <style>
-                            div[aria-label="🔄 Refresh"] button {
-                                background-color: #ef4444 !important;
-                                color: white !important;
-                            }
+                            div[aria-label="🔄"] button { background-color: #ef4444 !important; color: white !important; padding: 0.2rem 0.4rem !important; }
                             </style>
                             """, 
                             unsafe_allow_html=True
@@ -584,7 +733,7 @@ def main():
                         st.cache_data.clear()
                         st.rerun()
 
-                horizon_key = "current"  # Fixed current TF
+                horizon_key = "current" 
 
                 if timeframe == "5m":
                     st.caption("🛈 Live model available for 15m, 1h, 4h timeframes only")
@@ -598,9 +747,23 @@ def main():
 
                 # Horizon toggle
                 horizon_mode = st.radio(
-                    "Horizon", ["Current TF", "Next TF"], horizontal=True, key=f"pred_mode_{timeframe}"
+                    "Horizon", ["Current TF", "Next TF"], horizontal=True, key=f"pred_mode_{timeframe}_v5"
                 )
+
+                # Dynamic horizon name mapping
+                horizon_map = {
+                    "15m": {"current": "15m", "next": "1h"},
+                    "1h": {"current": "1h", "next": "4h"},
+                    "4h": {"current": "4h", "next": "1d"},
+                    "5m": {"current": "5m", "next": "15m"}
+                }
+
                 horizon_key = "current" if horizon_mode == "Current TF" else "next"
+                display_horizon = horizon_map.get(timeframe, {}).get(horizon_key, timeframe)
+
+                # Title with st.rerun() trigger
+                st.markdown(f"**Next {display_horizon} prediction**")
+                st.caption(f"Debug: mode={horizon_mode}, key={horizon_key}, horizon={display_horizon}")
 
                 # Real model prediction
                 if timeframe == "5m":
@@ -612,7 +775,7 @@ def main():
                     st.info("Live model is available for 15m, 1h and 4h timeframes.")
                     return
 
-                direction = pred.get("direction", "Neutral")
+                direction = pred.get("direction")
                 conf = float(pred.get("confidence", 0.0))
                 struct = pred.get("structure", {})
 
@@ -628,7 +791,7 @@ def main():
                     <div style="display:flex;justify-content:space-between;">
                     <div>
                         <div style="font-size:0.8rem;color:#9ca3af;">Direction</div>
-                        <div class="{dir_class}" style="font-size:1.4rem;font-weight:700;">
+                        <div class="{dir_class}" style="font-size:1.3rem;font-weight:700;">
                         {direction}
                         </div>
                     </div>
@@ -695,76 +858,238 @@ def main():
                     "model's forecast candle for the next bar of the selected timeframe."
                 )
 
-        with rationale_container:
-            st.markdown("---")
-            st.markdown(
-                "<div style='font-size:1.1rem; font-weight:600;'>Our rationale</div>",
-                unsafe_allow_html=True,
-            )
-            col_r1, col_r2 = st.columns(2)
+            with rationale_container:
+                st.markdown("---")
 
-            compat = compatibility_score(prev_pattern, direction if pred else prev_pattern)
-
-            with col_r1:
-                st.markdown(
-                    f"""
-                    - Price is trading above key moving averages, supporting a bullish bias.
-                    - RSI is in bullish territory without major divergence.
-                    - Recent candlesticks form a **{prev_pattern}** setup, followed by a predicted **{direction if pred else prev_pattern}**.
-                    - Pattern compatibility between previous and next candle is **{compat}**.
-                    """
-                )
-            with col_r2:
+                # Centered, white, bigger heading
                 st.markdown(
                     """
-                        - Recent candles show higher lows, consistent with an uptrend.
-                        - No major negative headlines in the latest news heatmap buckets.
-                        - Volumes are near or above recent averages.
-                    """
+                    <div style="
+                        text-align:center;
+                        font-weight:700;
+                        font-size:1.4rem;
+                        margin-bottom:0.75rem;
+                        color:#ffffff;
+                    ">
+                        Our Rationale
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
                 )
 
-        with ai_container:
-            st.markdown("---")
-            st.markdown("### AI trade assistant (mock backend)", unsafe_allow_html=True)
+                # --- load indicators for the CURRENT timeframe ---
+                # If you already have @st.cache_data get_live_indicators(timeframe), use it:
+                inds = get_live_indicators(timeframe) if "get_live_indicators" in globals() else {}
 
-            col_left, col_right = st.columns([2, 1])
-            with col_left:
-                st.write(
-                    "Describe your scenario, e.g. "
-                    "`If we get a breakdown of 68,000 on 1h, what should RSI/MACD/volume look like?`"
-                )
-                key_level = st.number_input(
-                    "Key level (trendline / support / resistance)", value=68000.0, step=100.0
-                )
-                move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"], index=0)
-                user_msg = st.text_area(
-                    "Your question to the AI",
-                    value="If we get a breakdown of this level, what should indicators look like to justify a short?",
-                    height=100,
-                )
-                ask_btn = st.button("Ask AI about this scenario")
+                if inds:
+                    rsi = inds["rsi"]
+                    macd = inds["macd"]
+                    macd_signal = inds["macd_signal"]
+                    volume_ratio = inds["volume_ratio"]
+                    sma_ratio = inds["sma_ratio"]
+                    bb_position = inds["bb_position"]
+                    struct_label = struct.get("label", "Ranging") if "struct" in locals() else "Ranging"
+                else:
+                    # Fallback: direct CSV read per TF (still tied to selected timeframe)
+                    feature_csv = FEATURE_CSV_BY_TF.get(timeframe)
+                    if feature_csv and Path(feature_csv).exists():
+                        df = pd.read_csv(feature_csv).tail(1)
+                        latest = df.iloc[0]
+                        rsi = latest.get("rsi", 50)
+                        macd = latest.get("macd", 0)
+                        macd_signal = latest.get("macd_signal", 0)
+                        volume_ratio = latest.get("volume_ratio", 1.0)
+                        sma_ratio = latest.get("sma_ratio", 1.0)
+                        bb_position = latest.get("bb_position", 0.5)
+                        struct_label = struct.get("label", "Ranging") if "struct" in locals() else "Ranging"
+                    else:
+                        rsi, macd, macd_signal, volume_ratio, sma_ratio, bb_position = 50, 0, 0, 1.0, 1.0, 0.5
+                        struct_label = "Data unavailable"
 
-                ai_response = None
-                if ask_btn:
-                    ai_response = ask_ai_trade_assistant(
-                        level=key_level,
-                        direction=move_type,
-                        timeframe=timeframe,
-                        message=user_msg,
+                # --- Dynamic rationale bullets with one-line explanations ---
+                rationale_points: list[str] = []
+                rationale_points.append(
+                    f"- **Structure**: {struct_label} — recent swing highs and lows suggest this overall trend."
+                )
+
+                # SMA relationship
+                if sma_ratio > 1.0:
+                    rationale_points.append(
+                        "- Price > SMA20/50: Bullish bias — price trades above key moving averages, showing buyers in control."
+                    )
+                elif sma_ratio < 0.98:
+                    rationale_points.append(
+                        "- Price < SMAs: Bearish pressure — price sits below key moving averages, indicating sellers dominating."
+                    )
+                else:
+                    rationale_points.append(
+                        "- Price ~ SMAs: Neutral — price is hovering around moving averages, signalling indecision."
                     )
 
-                if ai_response:
-                    st.markdown("**AI response (mock):**")
-                    st.write(ai_response)
-            # RIGHT COLUMN: moved chart uploader under AI assistant, aligned right
-            with col_right:
-                uploaded_img = st.file_uploader(
-                    "Attach current chart screenshot",
-                    type=["png", "jpg", "jpeg"],
+                # RSI state
+                if rsi > 65:
+                    rationale_points.append(
+                        f"- RSI {rsi:.0f}: Overbought — upside momentum is strong but risk of a pullback increases."
+                    )
+                elif rsi < 35:
+                    rationale_points.append(
+                        f"- RSI {rsi:.0f}: Oversold — downside momentum is stretched and a bounce becomes more likely."
+                    )
+                elif rsi > 55:
+                    rationale_points.append(
+                        f"- RSI {rsi:.0f}: Bullish — momentum tilts to the upside, favouring long setups."
+                    )
+                else:
+                    rationale_points.append(
+                        f"- RSI {rsi:.0f}: Neutral — momentum is balanced with no strong edge to either side."
+                    )
+
+                # MACD
+                if macd > macd_signal:
+                    rationale_points.append(
+                        f"- MACD bullish ({macd:.3f}): The faster line is above the signal line, confirming bullish momentum."
+                    )
+                else:
+                    rationale_points.append(
+                        f"- MACD bearish ({macd:.3f}): The faster line is below the signal line, confirming bearish momentum."
+                    )
+
+                # Volume
+                if volume_ratio > 1.2:
+                    rationale_points.append(
+                        f"- Volume ↑ {volume_ratio:.1f}x: Moves are happening on elevated activity, making the signal more reliable."
+                    )
+                elif volume_ratio < 0.8:
+                    rationale_points.append(
+                        f"- Volume ↓ {volume_ratio:.1f}x: Price moves are on thin volume, so signals may be weaker."
+                    )
+                else:
+                    rationale_points.append(
+                        f"- Volume normal {volume_ratio:.1f}x: Activity is typical, giving average reliability to the setup."
+                    )
+
+                # Bollinger Bands position
+                if bb_position > 0.8:
+                    rationale_points.append(
+                        f"- Upper BB {bb_position:.0%}: Price is pushing near the upper band, indicating strong buying pressure."
+                    )
+                elif bb_position < 0.2:
+                    rationale_points.append(
+                        f"- Lower BB {bb_position:.0%}: Price is near the lower band, reflecting strong selling pressure."
+                    )
+                else:
+                    rationale_points.append(
+                        f"- BB mid {bb_position:.0%}: Price is around the middle band, consistent with a more balanced market."
+                    )
+
+                # --- layout: two columns of bullets ---
+                col_r1, col_r2 = st.columns(2)
+                with col_r1:
+                    for point in rationale_points[:4]:
+                        st.markdown(f"• {point}")
+                with col_r2:
+                    for point in rationale_points[4:]:
+                        st.markdown(f"• {point}")
+
+
+            # For the timeframes you support in the UI
+            SUPPORTED_CHART_TFS = ["15m", "1h", "4h"]
+
+            predictions_by_chart_tf: dict[str, list[dict]] = {}
+
+            for tf in SUPPORTED_CHART_TFS:
+                try:
+                    predictions_by_chart_tf[tf] = get_predictions_for_chart(tf)
+                except Exception:
+                    predictions_by_chart_tf[tf] = []
+
+            def get_primary_prediction_for_chart_tf(
+                chart_tf: str,
+                predictions_by_chart_tf: dict[str, list[dict]],
+            ) -> tuple[str | None, float | None, dict | None]:
+                preds = predictions_by_chart_tf.get(chart_tf, [])
+                if not preds:
+                    return None, None, None
+
+                primary = preds[0]  # e.g. 1h/1h for 1h chart
+                return (
+                    primary.get("direction"),          # class_name, e.g. "Bullish"
+                    primary.get("confidence"),         # float 0..1
+                    primary.get("structure"),          # dict from structure_result.to_dict()
                 )
-                if uploaded_img:
-                    st.image(uploaded_img, caption="Attached chart for AI context")
-                    st.caption("This image would be sent to the AI backend.")
+
+
+            with ai_container:
+                st.markdown("---")
+                st.markdown("### AI trade assistant", unsafe_allow_html=True)
+
+                col_left, col_right = st.columns([2, 1])
+
+                with col_left:
+                    st.write(
+                        "Describe your scenario, e.g. "
+                        "`If we get a breakdown of 68,000 on 1h, what should RSI/MACD/volume look like?`"
+                    )
+                    key_level = st.number_input(
+                        "Key level (trendline / support / resistance)", value=68000.0, step=100.0
+                    )
+                    move_type = st.selectbox("Scenario", ["Breakdown", "Breakout"], index=0)
+                    user_msg = st.text_area(
+                        "Your question to the AI",
+                        value=(
+                            "If we get a breakdown of this level, what should indicators "
+                            "look like to justify a short?"
+                        ),
+                        height=100,
+                    )
+
+                    col_btn_ask, col_btn_clear = st.columns([1, 1])
+                    with col_btn_ask:
+                        ask_btn = st.button("Ask AI about this scenario", use_container_width=True)
+                    with col_btn_clear:
+                        clear_btn = st.button("Clear AI response", use_container_width=True)
+
+                    # Clear stored response
+                    if clear_btn:
+                        st.session_state.ai_response = None
+
+                    # Call AI and persist response
+                    if ask_btn:
+                        try:
+                            latest_inds = get_live_indicators(timeframe)
+                        except Exception:
+                            latest_inds = None
+
+                        # Get model prediction + structure for this chart TF
+                        model_direction, model_confidence, trend_structure = get_primary_prediction_for_chart_tf(
+                            timeframe,
+                            predictions_by_chart_tf,
+                        )
+
+                        st.session_state.ai_response = call_ai_trade_assistant(
+                            level=key_level,
+                            direction=move_type,
+                            timeframe=timeframe,
+                            message=user_msg,
+                            latest_indicators=latest_inds,
+                            model_direction=model_direction,
+                            model_confidence=model_confidence,
+                            trend_structure=trend_structure,
+                        )
+                    # Show persisted response (survives reruns/auto-refresh)
+                    if st.session_state.ai_response:
+                        st.markdown("**AI response:**")
+                        st.write(st.session_state.ai_response)
+
+                with col_right:
+                    uploaded_img = st.file_uploader(
+                        "Attach current chart screenshot",
+                        type=["png", "jpg", "jpeg"],
+                    )
+                    if uploaded_img:
+                        st.image(uploaded_img, caption="Attached chart for AI context")
+                        st.caption("Image support not wired yet, but will be sent to the AI backend later.")
+
 
     with tab_news:
         categorized_news = fetch_categorized_news(symbol)
