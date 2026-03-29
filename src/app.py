@@ -859,7 +859,7 @@ def main():
             symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
         with c2:
             st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Timeframe</div>", unsafe_allow_html=True)
-            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=0, label_visibility="collapsed", key="tf_dd")
+            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=0, label_visibility="collapsed", key="tf_dd")
 
 
 
@@ -983,7 +983,6 @@ def main():
 
                 # Title with st.rerun() trigger
                 st.markdown(f"**Next {display_horizon} prediction**")
-                st.caption(f"Debug: mode={horizon_mode}, key={horizon_key}, horizon={display_horizon}")
 
                 # Real model prediction
                 if timeframe == "5m":
@@ -1319,7 +1318,7 @@ def main():
                 st.subheader("Technical Analysis", anchor=False)
                 ta_tf = st.radio(
                     "Timeframe",
-                    ["15m", "1H", "4H", "1D"],
+                    ["15m", "1H", "4H"],
                     horizontal=True,
                     index=1,
                     key="tech_ta_tf",
