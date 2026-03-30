@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, date
 from pathlib import Path
 import sys
 import textwrap
+
 import requests  # NEW
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
@@ -58,6 +60,226 @@ FEATURE_CSV_BY_TF = {
     "4h":  "data/processed/btc_4h_live_features.csv",
     "1d":  "data/processed/btc_1d_live_features.csv",
 }
+
+def _pick_col(row, candidates, default=None):
+    """Find first matching column name in row keys."""
+    for c in candidates:
+        if c in row.index:
+            return c
+    return default
+
+def load_live_features(tf):
+    csv_path = Path(f"data/processed/btc_{tf}_live_features.csv")
+    if not csv_path.exists():
+        return None
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        return None
+    return df.iloc[-1]  # Returns Series
+
+def to_num(v, default=np.nan):
+    try:
+        if pd.isna(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+def badge_from_score(score):
+    if score >= 0.67:
+        return "Bullish"
+    if score <= 0.33:
+        return "Bearish"
+    return "Neutral"
+
+def score_from_signal(signal):
+    signal = str(signal).lower()
+    if "bullish" in signal or "buy" in signal or "above" in signal or "positive" in signal:
+        return 1.0
+    if "bearish" in signal or "sell" in signal or "below" in signal or "negative" in signal:
+        return 0.0
+    return 0.5
+
+def safe_status_text(label, value, note=""):
+    if pd.isna(value):
+        return "N/A"
+    if note:
+        return f"{label}: {value:.4f} ({note})"
+    return f"{label}: {value:.4f}"
+
+def compute_indicator_snapshot(row):
+    """
+    row is pandas Series (single row from df.iloc[-1])
+    Returns:
+      indicators: list of dicts for table + per-indicator bars
+      overall_score: 0..1 aggregated score across indicators
+    """
+    cols = row.index.tolist()
+
+    close = to_num(row.get(_pick_col(row, ["close", "Close"]), np.nan))
+    volume = to_num(row.get(_pick_col(row, ["volume", "Volume"]), np.nan))
+
+    # RSI
+    rsi_col = _pick_col(row, ["rsi", "RSI", "RSI_14", "rsi14"])
+    rsi = to_num(row.get(rsi_col, np.nan))
+    if pd.isna(rsi):
+        rsi_status = "N/A"
+        rsi_score = 0.5
+    elif rsi > 55:
+        rsi_status = f"{rsi:.2f} (Bullish)"
+        rsi_score = 1.0
+    elif rsi < 45:
+        rsi_status = f"{rsi:.2f} (Bearish)"
+        rsi_score = 0.0
+    else:
+        rsi_status = f"{rsi:.2f} (Neutral)"
+        rsi_score = 0.5
+
+    # MACD
+    macd_col = _pick_col(row, ["macd", "MACD", "MACD_12_26_9"])
+    macds_col = _pick_col(row, ["macdsignal", "MACDs", "MACDs_12_26_9"])
+    macdh_col = _pick_col(row, ["macdhistogram", "MACDh", "MACDh_12_26_9"])
+    macd = to_num(row.get(macd_col, np.nan))
+    macds = to_num(row.get(macds_col, np.nan))
+    macdh = to_num(row.get(macdh_col, np.nan))
+
+    if pd.isna(macd) and pd.isna(macds) and pd.isna(macdh):
+        macd_status = "N/A"
+        macd_score = 0.5
+    else:
+        if not pd.isna(macdh):
+            if macdh > 0:
+                macd_status = f"{macd:.4f}/{macds:.4f}/{macdh:.4f} (Bullish)"
+                macd_score = 1.0
+            elif macdh < 0:
+                macd_status = f"{macd:.4f}/{macds:.4f}/{macdh:.4f} (Bearish)"
+                macd_score = 0.0
+            else:
+                macd_status = f"{macd:.4f}/{macds:.4f}/{macdh:.4f} (Neutral)"
+                macd_score = 0.5
+        elif not pd.isna(macd) and not pd.isna(macds):
+            if macd > macds:
+                macd_status = f"{macd:.4f}/{macds:.4f} (Bullish)"
+                macd_score = 1.0
+            elif macd < macds:
+                macd_status = f"{macd:.4f}/{macds:.4f} (Bearish)"
+                macd_score = 0.0
+            else:
+                macd_status = f"{macd:.4f}/{macds:.4f} (Neutral)"
+                macd_score = 0.5
+        else:
+            macd_status = f"{macd:.4f} (Neutral)"
+            macd_score = 0.5
+
+    # Bollinger Bands
+    bbu_col = _pick_col(row, ["bbu", "BBU", "BBU_20_2.0", "BBU_5_2.0"])
+    bbm_col = _pick_col(row, ["bbm", "BBM", "BBM_20_2.0", "BBM_5_2.0"])
+    bbl_col = _pick_col(row, ["bbl", "BBL", "BBL_20_2.0", "BBL_5_2.0"])
+    bbu = to_num(row.get(bbu_col, np.nan))
+    bbm = to_num(row.get(bbm_col, np.nan))
+    bbl = to_num(row.get(bbl_col, np.nan))
+
+    if pd.isna(close) or (pd.isna(bbu) and pd.isna(bbm) and pd.isna(bbl)):
+        bb_status = "N/A"
+        bb_score = 0.5
+    else:
+        if not pd.isna(bbu) and not pd.isna(bbl) and not pd.isna(bbm):
+            if close > bbm:
+                bb_status = f"{close:.2f} vs {bbm:.2f}/{bbu:.2f}/{bbl:.2f} (Bullish)"
+                bb_score = 1.0
+            elif close < bbl:
+                bb_status = f"{close:.2f} vs {bbm:.2f}/{bbu:.2f}/{bbl:.2f} (Bearish)"
+                bb_score = 0.0
+            else:
+                bb_status = f"{close:.2f} vs {bbm:.2f}/{bbu:.2f}/{bbl:.2f} (Neutral)"
+                bb_score = 0.5
+        else:
+            bb_status = f"{close:.2f} (Neutral)"
+            bb_score = 0.5
+
+    # Volume
+    vol_ratio_col = _pick_col(row, ["volumeratio", "volume_ratio", "VolumeRatio"])
+    vol_sma_col = _pick_col(row, ["volume_sma_20", "volumesma20", "vol_sma_20"])
+    vol_ratio = to_num(row.get(vol_ratio_col, np.nan))
+    vol_sma = to_num(row.get(vol_sma_col, np.nan))
+
+    if pd.isna(volume):
+        vol_status = "N/A"
+        vol_score = 0.5
+    elif not pd.isna(vol_ratio):
+        if vol_ratio > 1.1:
+            vol_status = f"{volume:.1f} (High, {vol_ratio:.2f}x)"
+            vol_score = 1.0
+        elif vol_ratio < 0.9:
+            vol_status = f"{volume:.1f} (Low, {vol_ratio:.2f}x)"
+            vol_score = 0.0
+        else:
+            vol_status = f"{volume:.1f} (Normal, {vol_ratio:.2f}x)"
+            vol_score = 0.5
+    elif not pd.isna(vol_sma) and vol_sma > 0:
+        ratio = volume / vol_sma
+        if ratio > 1.1:
+            vol_status = f"{volume:.1f} (High, {ratio:.2f}x)"
+            vol_score = 1.0
+        elif ratio < 0.9:
+            vol_status = f"{volume:.1f} (Low, {ratio:.2f}x)"
+            vol_score = 0.0
+        else:
+            vol_status = f"{volume:.1f} (Normal, {ratio:.2f}x)"
+            vol_score = 0.5
+    else:
+        vol_status = f"{volume:.1f} (Neutral)"
+        vol_score = 0.5
+
+    # SMA / trend
+    sma20_col = _pick_col(row, ["sma20", "SMA20", "SMA_20"])
+    sma50_col = _pick_col(row, ["sma50", "SMA50", "SMA_50"])
+    sma20 = to_num(row.get(sma20_col, np.nan))
+    sma50 = to_num(row.get(sma50_col, np.nan))
+    sma_ratio = to_num(row.get(_pick_col(row, ["smaratio", "sma_ratio"]), np.nan))
+
+    if pd.isna(sma20) and pd.isna(sma50) and pd.isna(sma_ratio):
+        sma_status = "N/A"
+        sma_score = 0.5
+    else:
+        if not pd.isna(sma_ratio):
+            if sma_ratio > 1:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Bullish)"
+                sma_score = 1.0
+            elif sma_ratio < 1:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Bearish)"
+                sma_score = 0.0
+            else:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Neutral)"
+                sma_score = 0.5
+        elif not pd.isna(sma20) and not pd.isna(sma50):
+            if sma20 > sma50:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Bullish)"
+                sma_score = 1.0
+            elif sma20 < sma50:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Bearish)"
+                sma_score = 0.0
+            else:
+                sma_status = f"{sma20:.2f}/{sma50:.2f} (Neutral)"
+                sma_score = 0.5
+        else:
+            sma_status = "N/A"
+            sma_score = 0.5
+
+    indicators = [
+        {"Indicator": "RSI", "Status": rsi_status, "Score": rsi_score},
+        {"Indicator": "MACD", "Status": macd_status, "Score": macd_score},
+        {"Indicator": "Bollinger Bands", "Status": bb_status, "Score": bb_score},
+        {"Indicator": "Volume", "Status": vol_status, "Score": vol_score},
+        {"Indicator": "SMA", "Status": sma_status, "Score": sma_score},
+    ]
+
+    overall_score = float(np.mean([x["Score"] for x in indicators]))
+    return indicators, overall_score
+
+def render_indicator_bar(title, score):
+    label = "Bullish" if score >= 0.67 else "Bearish" if score <= 0.33 else "Neutral"
+    render_ta_gauge(title, label, score)
 
 @st.cache_resource
 def get_groq_client():
@@ -637,7 +859,7 @@ def main():
             symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
         with c2:
             st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Timeframe</div>", unsafe_allow_html=True)
-            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=0, label_visibility="collapsed", key="tf_dd")
+            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=0, label_visibility="collapsed", key="tf_dd")
 
 
 
@@ -647,8 +869,6 @@ def main():
         # low/high are used as today's range; live_price as current
         day_low_approx = live_price * 0.98
         day_high_approx = live_price * 1.02
-        # Render inline here (no Refresh button anymore)
-        #render_range_bar("Day's Range", day_low_approx, day_high_approx, live_price)
 
     # Auto-refresh every 2 minutes
     _ = st_autorefresh(interval=2 * 60 * 1000, key="dashboard_refresh")
@@ -763,7 +983,6 @@ def main():
 
                 # Title with st.rerun() trigger
                 st.markdown(f"**Next {display_horizon} prediction**")
-                st.caption(f"Debug: mode={horizon_mode}, key={horizon_key}, horizon={display_horizon}")
 
                 # Real model prediction
                 if timeframe == "5m":
@@ -927,15 +1146,15 @@ def main():
                     )
 
                 # RSI state
-                if rsi > 65:
+                if rsi > 70:
                     rationale_points.append(
                         f"- RSI {rsi:.0f}: Overbought — upside momentum is strong but risk of a pullback increases."
                     )
-                elif rsi < 35:
+                elif rsi < 30:
                     rationale_points.append(
                         f"- RSI {rsi:.0f}: Oversold — downside momentum is stretched and a bounce becomes more likely."
                     )
-                elif rsi > 55:
+                elif rsi > 50:
                     rationale_points.append(
                         f"- RSI {rsi:.0f}: Bullish — momentum tilts to the upside, favouring long setups."
                     )
@@ -1096,45 +1315,69 @@ def main():
         render_news_panel(categorized_news)
 
     with tab_tech:
-        st.subheader("Technical Analysis", anchor=False)
-        ta_tf = st.radio("Timeframe", ["15m", "1H", "4H", "1D"], horizontal=True, index=1, key="tech_ta_tf")
-        
-        if ta_tf == "15m": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Buy", 0.65, "Strong Buy", 0.80, "Buy", 0.70
-        elif ta_tf == "1H": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Buy", 0.60, "Buy", 0.65, "Buy", 0.62
-        elif ta_tf == "4H": ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Neutral", 0.50, "Neutral", 0.50, "Neutral", 0.50
-        else: ti_label, ti_score, ma_label, ma_score, sum_label, sum_score = "Sell", 0.35, "Sell", 0.30, "Sell", 0.32
+                st.subheader("Technical Analysis", anchor=False)
+                ta_tf = st.radio(
+                    "Timeframe",
+                    ["15m", "1H", "4H"],
+                    horizontal=True,
+                    index=1,
+                    key="tech_ta_tf",
+                )
 
-        c_ti, c_sum, c_ma = st.columns(3)
-        with c_ti: render_ta_gauge("Technical Indicators", ti_label, ti_score)
-        with c_sum: render_ta_gauge("Summary", sum_label, sum_score)
-        with c_ma: render_ta_gauge("Moving Averages", ma_label, ma_score)
+                row = load_live_features(ta_tf)
 
-        st.markdown("---")
-        st.subheader("Key technical indicators", anchor=False)
+                if row is None:
+                    st.warning(f"No live features found for btc_{ta_tf}_live_features.csv")
+                    indicators = [
+                        {"Indicator": "RSI",             "Status": "N/A", "Score": 0.5},
+                        {"Indicator": "MACD",            "Status": "N/A", "Score": 0.5},
+                        {"Indicator": "Bollinger Bands", "Status": "N/A", "Score": 0.5},
+                        {"Indicator": "Volume",          "Status": "N/A", "Score": 0.5},
+                        {"Indicator": "SMA",             "Status": "N/A", "Score": 0.5},
+                    ]
+                    overall_score = 0.5
+                else:
+                    indicators, overall_score = compute_indicator_snapshot(row)
 
-        indicator_states = get_indicator_states(symbol, timeframe)
-        rows = []
-        trend = get_current_trend(symbol, timeframe)
-        for name, state in indicator_states.items():
-            if "Bullish" in state and trend == "Uptrend":
-                support = "Supports uptrend"
-            elif "Bearish" in state and trend == "Downtrend":
-                support = "Supports downtrend"
-            else:
-                support = "Neutral / mixed"
-            rows.append(
-                {
-                    "Indicator": name,
-                    "Status": state,
-                    "Trend support": support,
-                }
-            )
-        tech_df = pd.DataFrame(rows)
-        st.dataframe(tech_df, use_container_width=True)
-        st.caption(
-            "Mock values for now – this view will later be driven by real indicator "
-            "calculations for the selected symbol and timeframe."
-        )
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
+                with c1:
+                    render_indicator_bar("RSI", indicators[0]["Score"])
+                with c2:
+                    render_indicator_bar("MACD", indicators[1]["Score"])
+                with c3:
+                    render_indicator_bar("Bollinger Bands", indicators[2]["Score"])
+                with c4:
+                    render_indicator_bar("Volume", indicators[3]["Score"])
+                with c5:
+                    render_indicator_bar("SMA", indicators[4]["Score"])
+                with c6:
+                    render_indicator_bar("Overall Technical", overall_score)
+
+                st.markdown("---")
+                st.subheader("Key technical indicators", anchor=False)
+
+                trend_support = (
+                    "Supports uptrend" if overall_score >= 0.67
+                    else "Supports downtrend" if overall_score <= 0.33
+                    else "Neutral / mixed"
+                )
+
+                rows = [
+                    {
+                        "Indicator": item["Indicator"],
+                        "Status": item["Status"],
+                        "Trend support": trend_support,
+                    }
+                    for item in indicators
+                ]
+                tech_df = pd.DataFrame(rows)
+                st.dataframe(tech_df, use_container_width=True)
+
+                if row is not None:
+                    st.caption(f"Live data from btc_{ta_tf}_live_features.csv (latest row).")
+                else:
+                    st.caption("Using fallback neutral values because the live feature file was not found.")
+
 
     with tab_history:
         st.subheader("Historical analysis (mock)", anchor=False)
