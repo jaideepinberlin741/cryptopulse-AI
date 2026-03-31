@@ -20,6 +20,8 @@ from streamlit_autorefresh import st_autorefresh
 from components.news_panel import render_news_panel
 from collections import defaultdict
 from dotenv import load_dotenv 
+from src.live.news_fetcher import fetch_latest_news, QUERIES
+# ... rest of your app
 
 # Ensure project root is on sys.path so `src` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -881,7 +883,7 @@ def main():
         render_range_bar("52 wk Range", 60187.0, 126186.0, live_price)
 
     # ----- Tabs -----
-    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["General", "Chart", "Latest Hot News", "Technical Analysis", "Historical Analysis"])
+    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["Home", "Chart", "News", "Technical Indicators", "Historical Data"])
 
     with tab_general:
         st.subheader("About Bitcoin", anchor=False)
@@ -1311,8 +1313,64 @@ def main():
 
 
     with tab_news:
-        categorized_news = fetch_categorized_news(symbol)
-        render_news_panel(categorized_news)
+        st.header("Latest Hot News")
+
+        # Tab container matching screenshot
+        tab_crypto, tab_financial, tab_geo = st.tabs(["Crypto", "Financial", "Geopolitical"])
+
+        with tab_crypto:
+            
+            crypto_news = fetch_latest_news(QUERIES['crypto'])
+            for i, art in enumerate(crypto_news):
+                with st.container():
+                    col1, col2 = st.columns([1, 20])
+                    with col1:
+                        st.markdown("📈")
+                    with col2:
+                        st.markdown(f"**{art['title']}**")
+                        if art['description']:
+                            st.caption(art['description'])
+                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
+                        st.markdown(f"[Read more]({art['url']})")
+                    st.divider()
+
+        with tab_financial:
+           
+            financial_news = fetch_latest_news(QUERIES['financial'])
+            for art in financial_news:
+                with st.container():
+                    col1, col2 = st.columns([1, 20])
+                    with col1:
+                        st.markdown("💹")
+                    with col2:
+                        st.markdown(f"**{art['title']}**")
+                        if art['description']:
+                            st.caption(art['description'])
+                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
+                        st.markdown(f"[Read more]({art['url']})")
+                    st.divider()
+
+        with tab_geo:
+            
+            geo_news = fetch_latest_news(QUERIES['geopolitical'])
+            for art in geo_news:
+                with st.container():
+                    col1, col2 = st.columns([1, 20])
+                    with col1:
+                        st.markdown("🌍")
+                    with col2:
+                        st.markdown(f"**{art['title']}**")
+                        if art['description']:
+                            st.caption(art['description'])
+                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
+                        st.markdown(f"[Read more]({art['url']})")
+                    st.divider()
+
+        
+
+
+        #categorized_news = fetch_categorized_news(symbol)
+        #render_news_panel(categorized_news)
 
     with tab_tech:
                 st.subheader("Technical Analysis", anchor=False)
