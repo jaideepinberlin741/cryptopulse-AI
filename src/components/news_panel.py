@@ -1,15 +1,7 @@
 import streamlit as st
 
-def get_impact_color(impact: float) -> str:
-    if impact >= 0.7:
-        return "#ef4444"  # red = hot
-    elif impact >= 0.4:
-        return "#f59e0b"  # amber = medium
-    else:
-        return "#10b981"  # green = older/low impact
-
 def render_news_item(item):
-    color = get_impact_color(item.get("impact", 0))
+
     bucket = item.get("bucket", "")
     sentiment = item.get("sentiment", "").capitalize()
     headline = item.get("headline", "Untitled")

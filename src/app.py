@@ -20,8 +20,8 @@ from streamlit_autorefresh import st_autorefresh
 from components.news_panel import render_news_panel
 from collections import defaultdict
 from dotenv import load_dotenv 
-from src.live.news_fetcher import fetch_latest_news, QUERIES
-# ... rest of your app
+from src.components.news_fetcher import get_news, update_news_cache, safe_get, load_cache
+from src.components.history import render_history_tab
 
 # Ensure project root is on sys.path so `src` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +62,11 @@ FEATURE_CSV_BY_TF = {
     "4h":  "data/processed/btc_4h_live_features.csv",
     "1d":  "data/processed/btc_1d_live_features.csv",
 }
+
+def safe_get(article: dict, key: str, default: str = "") -> str:
+    """Safely extract a string field from a news article dict."""
+    val = article.get(key)
+    return str(val) if val not in (None, "", "None") else default
 
 def _pick_col(row, candidates, default=None):
     """Find first matching column name in row keys."""
@@ -437,6 +442,15 @@ def get_live_btc_price():
 
 st.set_page_config(page_title="CryptoPulse AI – BTC/USD", layout="wide")
 
+st.markdown(
+    """
+    <h1 style='text-align: center; margin-top: -1px; margin-bottom: 1px;'>
+        CryptoPulse AI
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
+
 hide_st_style = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -680,47 +694,6 @@ def build_mini_prediction_chart(last_candles: list[dict], pred: dict) -> go.Figu
 
 # ============ Mock backend functions ============
 
-def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
-    now = datetime.utcnow()
-    rows = [
-        {
-            "bucket": "Last 30m",
-            "timestamp": now - timedelta(minutes=10),
-            "headline": "BTC ETF inflows hit new weekly high",
-            "sentiment": "positive",
-            "impact": 0.95,
-        },
-        {
-            "bucket": "Last 2h",
-            "timestamp": now - timedelta(hours=1, minutes=15),
-            "headline": "Major exchange experiences brief outage",
-            "sentiment": "negative",
-            "impact": 0.8,
-        },
-        {
-            "bucket": "Last 6h",
-            "timestamp": now - timedelta(hours=4),
-            "headline": "Whale moves large BTC tranche to exchange",
-            "sentiment": "negative",
-            "impact": 0.65,
-        },
-        {
-            "bucket": "Last 24h",
-            "timestamp": now - timedelta(hours=14),
-            "headline": "On-chain activity rises amid renewed interest",
-            "sentiment": "neutral",
-            "impact": 0.4,
-        },
-        {
-            "bucket": "Older",
-            "timestamp": now - timedelta(days=1, hours=5),
-            "headline": "Macro data comes in line with expectations",
-            "sentiment": "neutral",
-            "impact": 0.2,
-        },
-    ]
-    return pd.DataFrame(rows)
-
 def get_indicator_states(symbol: str, timeframe: str):
     return {
         "RSI": "Bullish (above 55)", "MACD": "Sideways (flat histogram)",
@@ -852,23 +825,39 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # ----- Controls row (Symbol + Timeframe) -----
-    col_l, col_r = st.columns([3, 1]) 
-    with col_l:
-        c1, _, c2 = st.columns([1.2, 0.4, 1.2])
-        with c1:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Symbol</div>", unsafe_allow_html=True)
-            symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
-        with c2:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Timeframe</div>", unsafe_allow_html=True)
-            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=0, label_visibility="collapsed", key="tf_dd")
+        # ----- Controls row (Symbol + Timeframe) -----
+    outer_left, outer_right = st.columns([1, 1])
 
+    with outer_left:
+        symbol_wrap_left, symbol_col, symbol_wrap_right = st.columns([0.01, 0.62, 0.37])
+        with symbol_col:
+            st.markdown(
+                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.7rem; text-align:center;'>Symbol</div>",
+                unsafe_allow_html=True
+            )
+            symbol = st.selectbox(
+                "Symbol",
+                ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+                index=0,
+                label_visibility="collapsed",
+                key="symbol_dd"
+            )
 
+    with outer_right:
+        tf_wrap_left, tf_col, tf_wrap_right = st.columns([0.37, 0.62, 0.01])
+        with tf_col:
+            st.markdown(
+                "<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.7rem; text-align:center;'>Timeframe</div>",
+                unsafe_allow_html=True
+            )
+            timeframe = st.selectbox(
+                "Timeframe",
+                ["15m", "1h", "4h"],
+                index=0,
+                label_visibility="collapsed",
+                key="tf_dd"
+            )
 
-    with col_r:
-        # Day's range now dynamic from intraday approx (using 24h stats as proxy)
-        # Hard upper/lower bounds from Binance 24h stats
-        # low/high are used as today's range; live_price as current
         day_low_approx = live_price * 0.98
         day_high_approx = live_price * 1.02
 
@@ -883,19 +872,208 @@ def main():
         render_range_bar("52 wk Range", 60187.0, 126186.0, live_price)
 
     # ----- Tabs -----
-    tab_general, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["Home", "Chart", "News", "Technical Indicators", "Historical Data"])
+    tab_home, tab_chart, tab_news, tab_tech, tab_history = st.tabs(["Home", "Chart", "News", "Technical Indicators", "Historical Data"])
 
-    with tab_general:
-        st.subheader("About Bitcoin", anchor=False)
-        st.write("Bitcoin (BTC) is the first and most well-known cryptocurrency—a type of digital money that runs on a decentralized network instead of a bank or government.")
-        st.caption("Educational overview only – not investment advice.")
-        st.markdown("---")
-        st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
-        sentiment = st.radio(" ", ["Bullish?", "Bearish?"], index=None, horizontal=True, key="general_sentiment")
-        if sentiment:
+    with tab_home:
             st.markdown(
-                "Cool, let's validate your view with our prediction model on the **Chart** tab.",
-                unsafe_allow_html=True,
+                """
+                <style>
+                .cp-section-title {
+                    font-size: 2.2rem;
+                    font-weight: 700;
+                    color: #f5f7fa;
+                    margin-bottom: 1.2rem;
+                }
+
+                .cp-card {
+                    background: linear-gradient(180deg, #111827 0%, #0b1220 100%);
+                    border: 1px solid rgba(255, 255, 255, 0.08);
+                    border-radius: 18px;
+                    padding: 26px 22px 24px 22px;
+                    min-height: 380px;
+                    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+                }
+
+                .cp-icon-wrap {
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    margin-bottom: 10px;
+                }
+
+                .cp-icon {
+                    width: 54px;
+                    height: 54px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 1.5rem;
+                    font-weight: 700;
+                }
+
+                .cp-icon-btc {
+                    background: rgba(245, 158, 11, 0.12);
+                    border: 1px solid rgba(245, 158, 11, 0.25);
+                    color: #f59e0b;
+                }
+
+                .cp-icon-app {
+                    background: rgba(56, 189, 248, 0.12);
+                    border: 1px solid rgba(56, 189, 248, 0.25);
+                    color: #38bdf8;
+                }
+
+                .cp-card h3 {
+                    color: #ffffff;
+                    font-size: 1.35rem;
+                    font-weight: 700;
+                    margin-bottom: 14px;
+                    text-align: center;
+                }
+
+                .cp-card p {
+                    color: #d1d5db;
+                    font-size: 1rem;
+                    line-height: 1.7;
+                    margin-bottom: 12px;
+                }
+
+                .cp-highlight-btc {
+                    color: #f59e0b;
+                    font-weight: 700;
+                }
+
+                .cp-highlight-app {
+                    color: #38bdf8;
+                    font-weight: 700;
+                }
+
+                .cp-bullet {
+                    color: #e5e7eb;
+                    margin: 0.4rem 0;
+                    line-height: 1.6;
+                }
+
+                .cp-question-box {
+                    margin-top: 20px;
+                    padding: 20px 22px 10px 22px;
+                    background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+                    border: 1px solid rgba(245, 158, 11, 0.18);
+                    border-radius: 16px;
+                }
+
+                .cp-question-title {
+                    color: #ffffff;
+                    font-size: 1.15rem;
+                    font-weight: 700;
+                    margin-bottom: 6px;
+                }
+
+                .cp-question-subtitle {
+                    color: #9ca3af;
+                    font-size: 0.96rem;
+                    margin-bottom: 8px;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.markdown(
+                "<div class='cp-section-title'>About Bitcoin</div>",
+                unsafe_allow_html=True
+            )
+
+            col1, col2 = st.columns(2, gap="large")
+
+            with col1:
+                st.markdown(
+                    """
+                    <div class="cp-card">
+                        <div class="cp-icon-wrap">
+                            <div class="cp-icon cp-icon-btc">₿</div>
+                        </div>
+                        <h3>About Bitcoin</h3>
+                        <p>
+                            <span class="cp-highlight-btc">Bitcoin (BTC)</span> is the first successful decentralized cryptocurrency
+                            and the asset that laid the foundation for the modern crypto ecosystem.
+                            It launched in <span class="cp-highlight-btc">2009</span> and introduced peer-to-peer digital value transfer
+                            without relying on banks or central authorities.
+                        </p>
+                        <p>
+                            Bitcoin is now treated as the benchmark asset in crypto. When BTC trends strongly,
+                            the rest of the market often reacts, which is why traders watch its momentum,
+                            volatility, and broader market structure so closely.
+                        </p>
+                        <p class="cp-bullet">• First major cryptocurrency with global recognition</p>
+                        <p class="cp-bullet">• Shapes sentiment across the broader crypto market</p>
+                        <p class="cp-bullet">• Used by many traders as a market benchmark</p>
+                        <p class="cp-bullet">• Central to understanding crypto cycles and risk appetite</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with col2:
+                st.markdown(
+                    """
+                    <div class="cp-card">
+                        <div class="cp-icon-wrap">
+                            <div class="cp-icon cp-icon-app">AI</div>
+                        </div>
+                        <h3>About US</h3>
+                        <p>
+                            <span class="cp-highlight-app">CryptoPulse AI</span> is a BTC-focused trading intelligence dashboard
+                            designed to help users combine model signals, technical indicators, and market context
+                            in one workflow.
+                        </p>
+                        <p>
+                            The goal is to support more informed decisions by bringing together prediction tracking,
+                            technical analysis, historical performance, and live news that may influence Bitcoin’s next move.
+                        </p>
+                        <p class="cp-bullet">• Monitors BTC behavior across multiple timeframes</p>
+                        <p class="cp-bullet">• Validates signals using historical model performance</p>
+                        <p class="cp-bullet">• Combines chart-based context with live market news</p>
+                        <p class="cp-bullet">• Helps users trade with more structure and less guesswork</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            st.markdown(
+                """
+                <div class="cp-question-box">
+                    <div class="cp-question-title">What’s your view today on BTC?</div>
+                    <div class="cp-question-subtitle">Pick your market bias before reviewing the dashboard.</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            btc_view = st.radio(
+                "Select your BTC market view",
+                ["Bullish", "Bearish", "Neutral", "Wait and Watch"],
+                horizontal=True,
+                label_visibility="collapsed",
+                key="btc_market_view"
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    margin-top: 8px;
+                    padding: 12px 16px;
+                    border-radius: 12px;
+                    background: rgba(56, 189, 248, 0.08);
+                    border: 1px solid rgba(56, 189, 248, 0.18);
+                    color: #dbeafe;
+                    font-size: 0.98rem;
+                ">
+                    Your selected view: <b>{btc_view}</b>
+                </div>
+                """,
+                unsafe_allow_html=True
             )
 
     with tab_chart:
@@ -1313,64 +1491,66 @@ def main():
 
 
     with tab_news:
-        st.header("Latest Hot News")
+        header_col, action_col = st.columns([6, 1])
 
-        # Tab container matching screenshot
-        tab_crypto, tab_financial, tab_geo = st.tabs(["Crypto", "Financial", "Geopolitical"])
+        with header_col:
+            st.subheader("Latest Hot News")
 
-        with tab_crypto:
-            
-            crypto_news = fetch_latest_news(QUERIES['crypto'])
-            for i, art in enumerate(crypto_news):
+        with action_col:
+            if st.button("Refresh News", key="refresh_news_btn", use_container_width=True):
+                with st.spinner("Fetching latest headlines from RSS feeds..."):
+                    result = update_news_cache()
+
+                if result.get("ok"):
+                    st.success("News cache updated successfully.")
+                else:
+                    st.error(f"News refresh failed: {result.get('error', 'Unknown error')}")
+                    st.caption(result.get("details", "No additional details available."))
+
+                st.rerun()
+
+        cache_data = safe_get(load_cache(), "updated_at", "")
+        if cache_data:
+            st.caption(f"Last updated: {cache_data}")
+        else:
+            st.caption("No cache yet. Click Refresh News to load headlines.")
+
+        news_tab1, news_tab2, news_tab3 = st.tabs(["Crypto", "Financial", "Geopolitical"])
+
+        def render_news_list(news_items, icon):
+            for art in news_items:
                 with st.container():
                     col1, col2 = st.columns([1, 20])
+
                     with col1:
-                        st.markdown("📈")
+                        st.markdown(icon)
+
                     with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
+                        st.markdown(f"**{safe_get(art, 'title', 'Untitled')}**")
+
+                        desc = safe_get(art, "description", "")
+                        if desc:
+                            st.caption(desc)
+
+                        source = safe_get(art, "source", "Unknown")
+                        published = safe_get(art, "publishedAt", "")
+                        published_short = published[:16].replace("T", " ") if published else "Unknown time"
+                        st.caption(f"{source} • {published_short}")
+
+                        url = safe_get(art, "url", "#")
+                        if url and url != "#":
+                            st.markdown(f"[Read more]({url})")
+
                     st.divider()
 
-        with tab_financial:
-           
-            financial_news = fetch_latest_news(QUERIES['financial'])
-            for art in financial_news:
-                with st.container():
-                    col1, col2 = st.columns([1, 20])
-                    with col1:
-                        st.markdown("💹")
-                    with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
-                    st.divider()
+        with news_tab1:
+            render_news_list(get_news("crypto"), "₿")
 
-        with tab_geo:
-            
-            geo_news = fetch_latest_news(QUERIES['geopolitical'])
-            for art in geo_news:
-                with st.container():
-                    col1, col2 = st.columns([1, 20])
-                    with col1:
-                        st.markdown("🌍")
-                    with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
-                    st.divider()
+        with news_tab2:
+            render_news_list(get_news("financial"), "💹")
 
-        
-
-
-        #categorized_news = fetch_categorized_news(symbol)
-        #render_news_panel(categorized_news)
+        with news_tab3:
+            render_news_list(get_news("geopolitical"), "🌍")
 
     with tab_tech:
                 st.subheader("Technical Analysis", anchor=False)
@@ -1438,26 +1618,7 @@ def main():
 
 
     with tab_history:
-        st.subheader("Historical analysis (mock)", anchor=False)
-        st.markdown("### Previous model predictions – hit/miss (mock)", unsafe_allow_html=True)
-        hist_df = get_mock_prediction_history()
-        lookback_label = st.selectbox("Lookback window", ["1 month", "3 months", "6 months"], index=2)
-        days_hist = {"1 month": 30, "3 months": 90, "6 months": 180}[lookback_label]
-        filt = hist_df[hist_df["date"] >= (date.today() - timedelta(days=days_hist))]
-        if not filt.empty:
-            st.write(f"- Total trades: **{len(filt)}**, correct: **{int(filt['correct'].sum())}**, accuracy: **{filt['correct'].mean():.1%}**.")
-            st.dataframe(filt.sort_values("date", ascending=False), use_container_width=True, height=220)
-        
-        st.markdown("---")
-        st.markdown("### Hypothetical returns calculator (mock)", unsafe_allow_html=True)
-        col_cap, col_lb = st.columns(2)
-        initial_capital = col_cap.number_input("Starting capital (€)", min_value=1000.0, value=10000.0, step=500.0)
-        rb_label = col_lb.selectbox("Backtest window", ["1 month", "3 months", "6 months"], index=1)
-        rb_days = {"1 month": 30, "3 months": 90, "6 months": 180}[rb_label]
-        rb_hist = hist_df[hist_df["date"] >= (date.today() - timedelta(days=rb_days))]
-        if not rb_hist.empty:
-            final_capital = initial_capital * (1 + rb_hist["pnl_pct"]).prod()
-            st.write(f"A starting capital of **€{initial_capital:,.0f}** would now be **€{final_capital:,.0f}** (**{(final_capital/initial_capital - 1):.1%}** return).")
+        render_history_tab()
 
 if __name__ == "__main__":
     main()
