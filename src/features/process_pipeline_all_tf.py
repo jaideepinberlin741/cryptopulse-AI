@@ -72,7 +72,7 @@ def engineer_features_for_file(input_csv: str, output_csv: str) -> pd.DataFrame:
     df = pd.read_csv(input_csv)
 
     # Ensure time index
-    df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+    df["open_time"] = pd.to_datetime(df["open_time"], format="mixed", utc=True)
     df.set_index("open_time", inplace=True)
 
     # Keep OHLCV as float
@@ -172,7 +172,7 @@ def _build_partial_from_lower_tf(
         raise FileNotFoundError(lower_tf_csv)
 
     df = pd.read_csv(lower_tf_csv)
-    df["open_time"] = pd.to_datetime(df["open_time"], utc=True)
+    df["open_time"] = pd.to_datetime(df["open_time"], format="mixed", utc=True)
     df = df.sort_values("open_time")
 
     if lookback_bars is not None and len(df) > lookback_bars:

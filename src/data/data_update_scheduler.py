@@ -53,7 +53,7 @@ def update_timeframe(tf, max_retries=3):
 
             # Load existing raw data
             df = pd.read_csv(csv_path)
-            df['open_time'] = pd.to_datetime(df['open_time'])
+            df['open_time'] = pd.to_datetime(df['open_time'], format='mixed')
             last_dt = df['open_time'].max()
 
             # Fetch new klines (12 fields from Binance)
@@ -74,7 +74,10 @@ def update_timeframe(tf, max_retries=3):
             new_rows = new_df[new_df['open_time'] > last_dt]
 
             if len(new_rows) > 0:
-                new_rows.to_csv(csv_path, mode='a', header=False, index=False)
+                new_rows.to_csv(
+                    csv_path, mode='a', header=False, index=False,
+                    date_format='%Y-%m-%d %H:%M:%S',
+                )
                 logger.info(
                     f"✅ {tf}: +{len(new_rows)} bars "
                     f"(latest: {new_rows['open_time'].max()})"
