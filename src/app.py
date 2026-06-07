@@ -20,8 +20,8 @@ from streamlit_autorefresh import st_autorefresh
 from components.news_panel import render_news_panel
 from collections import defaultdict
 from dotenv import load_dotenv 
-from src.live.news_fetcher import fetch_latest_news, QUERIES
-# ... rest of your app
+from src.live.news_fetcher import get_news, update_news_cache, safe_get
+
 
 # Ensure project root is on sys.path so `src` package is importable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -584,7 +584,7 @@ def load_last_n_candles(tf: str, n: int = 6) -> list[dict]:
 
     df = pd.read_csv(path)
     if "open_time" in df.columns:
-        df["open_time"] = pd.to_datetime(df["open_time"])
+        df["open_time"] = pd.to_datetime(df["open_time"], format="mixed")
         df = df.sort_values("open_time")
     else:
         df = df.sort_index()
@@ -677,9 +677,6 @@ def build_mini_prediction_chart(last_candles: list[dict], pred: dict) -> go.Figu
     )
     return fig
 
-
-# ============ Mock backend functions ============
-
 def get_news_heatmap_data(symbol: str, timeframe: str) -> pd.DataFrame:
     now = datetime.utcnow()
     rows = [
@@ -756,8 +753,6 @@ def ask_ai_trade_assistant(level: float, direction: str, timeframe: str, message
         "You can tighten or relax these conditions depending on your risk tolerance."
     )
 
-# ============ YOUR NEW NEWS FUNCTIONS (MOCK IMPLEMENTATION) ============
-
 def fetch_categorized_news(symbol: str) -> dict:
     """MOCK function to simulate fetching categorized news articles."""
     now = datetime.utcnow()
@@ -820,9 +815,60 @@ def render_tradingview_chart(symbol: str = "BTCUSD", interval: str = "60", heigh
     """
     components.html(html, height=height + 40, scrolling=True)
 
+def render_news_list(news_items, icon):
+    if news_items:
+        for art in news_items:
+            with st.container():
+                col1, col2 = st.columns([1, 20])
+
+                with col1:
+                    st.markdown(icon)
+
+                with col2:
+                    title = safe_get(art, "title", "No title")
+                    description = safe_get(art, "description", "")
+                    url = safe_get(art, "url", "#")
+                    source = safe_get(art, "source", "Unknown")
+                    published = safe_get(art, "publishedAt", "")
+
+                    st.markdown(f"**{title}**")
+
+                    if description:
+                        st.caption(description)
+
+                    meta_parts = []
+                    if source:
+                        meta_parts.append(f"*{source}*")
+                    if published:
+                        meta_parts.append(published)
+
+                    if meta_parts:
+                        st.caption(" • ".join(meta_parts))
+
+                    if url and url != "#":
+                        st.markdown(f"[Read more]({url})")
+
+                st.divider()
+    else:
+        st.info("No news available right now.")
+
 # ============ UI ============
 
 def main():
+    st.markdown(
+        """
+        <div style="padding:0.5rem 0.5rem 0.75rem 0.5rem; text-align:center;">
+          <div style="font-size:1.85rem; font-weight:700; letter-spacing:-0.02em; line-height:1.2;">
+            CryptoPulse <span style="color:#2563eb;">AI</span>
+          </div>
+          <div style="margin-top:0.2rem; color:#6b7280; font-size:0.9rem;">
+            Real-time crypto trading intelligence
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Fetch live BTC price once per run (used for top bar and day's range)
     live_price, live_change, live_change_pct = get_live_btc_price()
     change_color = "#16a34a" if live_change >= 0 else "#dc2626"
@@ -853,24 +899,17 @@ def main():
     )
 
     # ----- Controls row (Symbol + Timeframe) -----
-    col_l, col_r = st.columns([3, 1]) 
-    with col_l:
-        c1, _, c2 = st.columns([1.2, 0.4, 1.2])
-        with c1:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Symbol</div>", unsafe_allow_html=True)
-            symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
-        with c2:
-            st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Timeframe</div>", unsafe_allow_html=True)
-            timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=0, label_visibility="collapsed", key="tf_dd")
+    col_symbol, _, col_timeframe = st.columns([1.2, 4.6, 1.2])
+    with col_symbol:
+        st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem;'>Symbol</div>", unsafe_allow_html=True)
+        symbol = st.selectbox("Symbol", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0, label_visibility="collapsed", key="symbol_dd")
+    with col_timeframe:
+        st.markdown("<div style='font-size:0.9rem; color:#e5e7eb; margin-bottom:0.9rem; text-align:right;'>Timeframe</div>", unsafe_allow_html=True)
+        timeframe = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=0, label_visibility="collapsed", key="tf_dd")
 
-
-
-    with col_r:
-        # Day's range now dynamic from intraday approx (using 24h stats as proxy)
-        # Hard upper/lower bounds from Binance 24h stats
-        # low/high are used as today's range; live_price as current
-        day_low_approx = live_price * 0.98
-        day_high_approx = live_price * 1.02
+    # Day's range now dynamic from intraday approx (using 24h stats as proxy)
+    day_low_approx = live_price * 0.98
+    day_high_approx = live_price * 1.02
 
     # Auto-refresh every 2 minutes
     _ = st_autorefresh(interval=2 * 60 * 1000, key="dashboard_refresh")
@@ -887,7 +926,39 @@ def main():
 
     with tab_general:
         st.subheader("About Bitcoin", anchor=False)
-        st.write("Bitcoin (BTC) is the first and most well-known cryptocurrency—a type of digital money that runs on a decentralized network instead of a bank or government.")
+        st.markdown(
+            """
+            **Bitcoin (BTC)** is the first and most widely recognized cryptocurrency—a form of digital money
+            that operates on a decentralized network without banks, governments, or central authorities.
+
+            #### Origins
+            - Launched in **2009** by the pseudonymous creator **Satoshi Nakamoto**, following the 2008 whitepaper
+              *"Bitcoin: A Peer-to-Peer Electronic Cash System"*.
+            - It was designed as an alternative to traditional finance after the global financial crisis,
+              emphasizing transparency, censorship resistance, and user sovereignty.
+
+            #### How it works
+            - Transactions are recorded on a public **blockchain**—a distributed ledger maintained by thousands of
+              independent nodes worldwide.
+            - New bitcoins are created through **mining**, where specialized computers compete to validate
+              transactions and secure the network (Proof of Work).
+            - Supply is capped at **21 million coins**, with roughly half of all bitcoins already mined.
+              New issuance halves roughly every four years in an event called the **halving**.
+
+            #### Key characteristics
+            - **Decentralized** — no single entity controls the network.
+            - **Transparent** — every transaction is publicly verifiable on-chain.
+            - **Scarce** — the fixed supply is a core part of its value proposition.
+            - **Global** — transferable 24/7 across borders without intermediaries.
+            - **Volatile** — prices can swing sharply; risk management is essential.
+
+            #### In the markets
+            Bitcoin is the largest cryptocurrency by market capitalization and often sets the tone for the
+            broader crypto market. Traders watch BTC for macro sentiment, liquidity flows, ETF activity,
+            on-chain metrics, and technical levels across multiple timeframes—the same signals CryptoPulse AI
+            surfaces on the **Chart** and **Technical Indicators** tabs.
+            """
+        )
         st.caption("Educational overview only – not investment advice.")
         st.markdown("---")
         st.markdown("### How do you feel today about Bitcoin?", unsafe_allow_html=True)
@@ -1313,64 +1384,27 @@ def main():
 
 
     with tab_news:
-        st.header("Latest Hot News")
+        st.subheader("Latest Hot News", anchor=False)
 
-        # Tab container matching screenshot
-        tab_crypto, tab_financial, tab_geo = st.tabs(["Crypto", "Financial", "Geopolitical"])
+        tab_crypto, tab_financial, tab_geo = st.tabs(["Cryptos", "Financials", "Geopolitics"])
 
         with tab_crypto:
-            
-            crypto_news = fetch_latest_news(QUERIES['crypto'])
-            for i, art in enumerate(crypto_news):
-                with st.container():
-                    col1, col2 = st.columns([1, 20])
-                    with col1:
-                        st.markdown("📈")
-                    with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
-                    st.divider()
+            crypto_news = get_news("crypto")
+            render_news_list(crypto_news, "🪙")
 
         with tab_financial:
-           
-            financial_news = fetch_latest_news(QUERIES['financial'])
-            for art in financial_news:
-                with st.container():
-                    col1, col2 = st.columns([1, 20])
-                    with col1:
-                        st.markdown("💹")
-                    with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
-                    st.divider()
+            financial_news = get_news("financial")
+            render_news_list(financial_news, "💹")
 
         with tab_geo:
-            
-            geo_news = fetch_latest_news(QUERIES['geopolitical'])
-            for art in geo_news:
-                with st.container():
-                    col1, col2 = st.columns([1, 20])
-                    with col1:
-                        st.markdown("🌍")
-                    with col2:
-                        st.markdown(f"**{art['title']}**")
-                        if art['description']:
-                            st.caption(art['description'])
-                        st.caption(f"*{art['source']}* • {art['publishedAt'][:10]}")
-                        st.markdown(f"[Read more]({art['url']})")
-                    st.divider()
+            geo_news = get_news("geopolitical")
+            render_news_list(geo_news, "🌍")
 
-        
-
-
-        #categorized_news = fetch_categorized_news(symbol)
-        #render_news_panel(categorized_news)
+        if st.button("Refresh News"):
+            with st.spinner("Fetching latest news from RSS feeds..."):
+                payload = update_news_cache()
+                st.success(f"News updated successfully. Loaded {len(payload)} headlines.")
+                st.rerun()
 
     with tab_tech:
                 st.subheader("Technical Analysis", anchor=False)
